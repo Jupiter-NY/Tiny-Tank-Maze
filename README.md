@@ -1,79 +1,93 @@
-# Tiny Tank Maze — v4
+# Tiny Tank Maze — v4.1 Global Leaderboard
 
-## Pages
+This version adds a real shared/global leaderboard for a GitHub Pages deployment
+using Supabase as the online database.
 
-- `index.html` — dedicated home page
-- `game.html` — gameplay page
-- `home.js` — name handling + local leaderboards
-- `game.js` — game simulation and rendering
+## Added files
 
-## Game modes
+- `config.js` — your Supabase Project URL + publishable key
+- `leaderboard.js` — shared browser API for global scores
+- `supabase_setup.sql` — database/table/RLS setup
 
-### Classic
-- 6 enemy tanks
-- One maze
-- Existing power-ups continue spawning
-- Score includes clear, remaining-health, and speed bonuses
+## Setup
 
-### Infinite
-- Starts with 6 enemies
-- Every new wave adds 2 more enemies
-- The same maze remains for the whole run
-- Clearing a wave fully heals the player
-- Clearing a wave grants a permanent bullet upgrade choice
-- Permanent upgrades stack and combine
-- Run ends only when the player tank is destroyed
+### 1. Create a Supabase project
 
-## Permanent bullet modifications
+Create a project in Supabase.
 
-After each Infinite wave, choose 1 of 3 random upgrades:
+### 2. Run the SQL
 
-- Rapid Chamber — faster shooting; stacks multiplicatively
-- High Velocity — faster bullets
-- Explosive Rounds — bullet impact splash damage; radius and damage scale
-- Ricochet — +1 wall bounce per stack
-- Heavy Rounds — more direct damage
+Open `supabase_setup.sql`, copy all of it, and run it once in the Supabase SQL Editor.
 
-Examples:
-- Ricochet + Explosive Rounds: bullets bounce until impact, then explode
-- Rapid Chamber + Heavy Rounds: high-DPS direct fire
-- High Velocity + Ricochet + Explosive Rounds: fast bouncing explosive shots
+It creates the leaderboard table, enables Row Level Security, grants public
+read + insert only, and does not give browser users update/delete permission.
 
-## Leaderboards
+### 3. Copy your public project credentials
 
-The home page shows separate local top-5 boards for:
+In Supabase, copy:
 
-- Classic score
-- Infinite highest wave (score breaks ties)
+- Project URL
+- Publishable key (`sb_publishable_...`)
 
-The player's name and scores are stored in browser `localStorage`.
+Do NOT use a secret/service-role key.
 
-## Existing systems retained
+### 4. Edit `config.js`
 
-- Smooth wall-blocked field of view
-- Independent 360° turret aiming
-- Dynamic power-up spawning
-- Repair, rapid-fire, vision, grenade, and enemy-ping pickups
-- Grenades
-- Random maze generation
-- AI tank movement and line-of-sight combat
+Replace the placeholders:
 
-## Controls
+```js
+window.TANK_CONFIG = {
+  supabaseUrl: "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE",
+  supabasePublishableKey: "PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY_HERE",
+};
+```
 
-- WASD / arrow keys: move
-- Mouse: aim
-- Left click / Space: shoot
-- G: grenade
+with your real values.
+
+### 5. Push to GitHub Pages
+
+Keep these files in the published root:
+
+```text
+index.html
+game.html
+style.css
+home.js
+game.js
+config.js
+leaderboard.js
+supabase_setup.sql
+README.md
+```
+
+## Behavior
+
+- The homepage loads the global Classic and Infinite top-5 leaderboards.
+- Every completed/dead run saves locally first, then submits to Supabase.
+- If Supabase is unconfigured or unavailable, the game still works and the
+  homepage shows local fallback scores.
+- Infinite ranking sorts by highest wave first, then score.
+- Classic ranking sorts by score.
+
+## Security
+
+This is global, but not cheat-proof.
+
+The game is still fully client-side, so a determined player can modify their
+browser code or manually call the public score endpoint. Database constraints
+stop malformed or absurdly out-of-range records, but they cannot prove a score
+was actually earned.
+
+For a serious competitive leaderboard, score calculation/validation should move
+to an authoritative server or use signed/verifiable run data.
 
 ## Run locally
-
-From the project folder:
 
 ```bash
 python3 -m http.server 8000
 ```
 
-Then open:
+Then visit:
 
 ```text
 http://localhost:8000

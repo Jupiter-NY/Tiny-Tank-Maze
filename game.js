@@ -143,7 +143,7 @@
     }
   }
 
-  function saveCurrentScore(score, cleared) {
+  function saveLocalBackupScore(score, cleared) {
     const key = MODE === "infinite" ? INFINITE_SCORE_KEY : CLASSIC_SCORE_KEY;
     const scores = readScoreArray(key);
 
@@ -178,7 +178,31 @@
     try {
       localStorage.setItem(key, JSON.stringify(scores));
     } catch {
-      // Scores are optional if local storage is blocked.
+      // Local backup is optional.
+    }
+  }
+
+  async function submitCurrentScore(score, cleared) {
+    saveLocalBackupScore(score, cleared);
+
+    if (!window.TankLeaderboard?.isConfigured()) {
+      return { global: false, reason: "not-configured" };
+    }
+
+    try {
+      await window.TankLeaderboard.submitScore({
+        playerName: currentPlayerName,
+        mode: MODE,
+        score,
+        wave: roundNumber,
+        kills: player.score,
+        cleared,
+      });
+
+      return { global: true };
+    } catch (error) {
+      console.error("Global leaderboard submission failed:", error);
+      return { global: false, reason: "request-failed" };
     }
   }
 
@@ -1826,7 +1850,7 @@
     upgradePanel.classList.add("hidden");
 
     const finalScore = calculateFinalScore(won);
-    saveCurrentScore(finalScore, won);
+    const submissionPromise = submitCurrentScore(finalScore, won);
 
     if (MODE === "infinite") {
       resultEyebrow.textContent = "INFINITE RUN OVER";
@@ -1849,7 +1873,29 @@
     }
 
     finalScoreEl.textContent = finalScore.toLocaleString();
+
+    const baseModsText = finalMods.textContent;
+    finalMods.textContent = baseModsText
+      ? `${baseModsText} • Submitting global score…`
+      : "Submitting global score…";
+
     messagePanel.classList.remove("hidden");
+
+    submissionPromise.then((result) => {
+      if (result.global) {
+        finalMods.textContent = baseModsText
+          ? `${baseModsText} • Global score submitted`
+          : "Global score submitted";
+      } else if (result.reason === "not-configured") {
+        finalMods.textContent = baseModsText
+          ? `${baseModsText} • Saved locally (global setup required)`
+          : "Saved locally • global leaderboard setup required";
+      } else {
+        finalMods.textContent = baseModsText
+          ? `${baseModsText} • Saved locally (global submit failed)`
+          : "Saved locally • global submission failed";
+      }
+    });
   }
 
   function getMousePosition(evt) {

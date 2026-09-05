@@ -607,3 +607,12 @@ canvas {
     padding-inline: 12px;
   }
 }
+
+
+.leaderboard-online {
+  color: #7fdda1 !important;
+}
+
+.leaderboard-warning {
+  color: #d6ad70 !important;
+}

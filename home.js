@@ -10,6 +10,7 @@
   const nameError = document.getElementById("nameError");
   const classicList = document.getElementById("classicScores");
   const infiniteList = document.getElementById("infiniteScores");
+  const leaderboardStatus = document.getElementById("leaderboardStatus");
 
   function cleanName(value) {
     return String(value || "")
@@ -27,9 +28,8 @@
     }
   }
 
-  function getClassicScores() {
+  function localClassicScores() {
     let scores = readArray(CLASSIC_SCORE_KEY);
-
     if (!scores.length) {
       scores = readArray(LEGACY_SCORE_KEY).map((entry) => ({
         ...entry,
@@ -40,47 +40,57 @@
     return scores
       .slice()
       .sort((a, b) => Number(b.score || 0) - Number(a.score || 0))
-      .slice(0, 5);
+      .slice(0, 5)
+      .map((entry) => ({
+        player_name: entry.name || "Player",
+        score: Number(entry.score || 0),
+        wave: 1,
+        kills: Number(entry.kills || 0),
+        cleared: Boolean(entry.cleared),
+      }));
   }
 
-  function getInfiniteScores() {
+  function localInfiniteScores() {
     return readArray(INFINITE_SCORE_KEY)
       .slice()
       .sort((a, b) => {
         const waveDiff = Number(b.wave || 0) - Number(a.wave || 0);
-        if (waveDiff !== 0) return waveDiff;
-        return Number(b.score || 0) - Number(a.score || 0);
+        return waveDiff || Number(b.score || 0) - Number(a.score || 0);
       })
-      .slice(0, 5);
+      .slice(0, 5)
+      .map((entry) => ({
+        player_name: entry.name || "Player",
+        score: Number(entry.score || 0),
+        wave: Number(entry.wave || 1),
+        kills: Number(entry.kills || 0),
+        cleared: false,
+      }));
   }
 
-  function renderEmptyRow(list, text) {
+  function emptyRow(list, text) {
     const li = document.createElement("li");
     li.className = "empty-score";
     li.textContent = text;
     list.append(li);
   }
 
-  function renderClassic() {
-    const scores = getClassicScores();
+  function renderClassic(scores) {
     classicList.replaceChildren();
 
     if (!scores.length) {
-      renderEmptyRow(classicList, "No Classic runs yet.");
+      emptyRow(classicList, "No Classic scores yet.");
       return;
     }
 
-    for (const score of scores) {
+    for (const score of scores.slice(0, 5)) {
       const li = document.createElement("li");
-
       const name = document.createElement("strong");
-      name.textContent = cleanName(score.name) || "Player";
-
       const detail = document.createElement("span");
+      const value = document.createElement("b");
+
+      name.textContent = cleanName(score.player_name) || "Player";
       detail.textContent =
         `${Number(score.kills || 0)} kills • ${score.cleared ? "cleared" : "destroyed"}`;
-
-      const value = document.createElement("b");
       value.textContent = Number(score.score || 0).toLocaleString();
 
       li.append(name, detail, value);
@@ -88,30 +98,60 @@
     }
   }
 
-  function renderInfinite() {
-    const scores = getInfiniteScores();
+  function renderInfinite(scores) {
     infiniteList.replaceChildren();
 
     if (!scores.length) {
-      renderEmptyRow(infiniteList, "No Infinite runs yet.");
+      emptyRow(infiniteList, "No Infinite scores yet.");
       return;
     }
 
-    for (const score of scores) {
+    for (const score of scores.slice(0, 5)) {
       const li = document.createElement("li");
-
       const name = document.createElement("strong");
-      name.textContent = cleanName(score.name) || "Player";
-
       const detail = document.createElement("span");
+      const value = document.createElement("b");
+
+      name.textContent = cleanName(score.player_name) || "Player";
       detail.textContent =
         `Wave ${Number(score.wave || 1)} • ${Number(score.kills || 0)} kills`;
-
-      const value = document.createElement("b");
       value.textContent = Number(score.score || 0).toLocaleString();
 
       li.append(name, detail, value);
       infiniteList.append(li);
+    }
+  }
+
+  function showLocalFallback(message) {
+    renderClassic(localClassicScores());
+    renderInfinite(localInfiniteScores());
+    leaderboardStatus.textContent = message;
+    leaderboardStatus.classList.remove("leaderboard-online");
+    leaderboardStatus.classList.add("leaderboard-warning");
+  }
+
+  async function loadLeaderboards() {
+    if (!window.TankLeaderboard?.isConfigured()) {
+      showLocalFallback("Global setup required — showing local backup.");
+      return;
+    }
+
+    leaderboardStatus.textContent = "Loading global scores…";
+    leaderboardStatus.classList.remove("leaderboard-warning");
+
+    try {
+      const [classic, infinite] = await Promise.all([
+        window.TankLeaderboard.fetchTop("classic", 5),
+        window.TankLeaderboard.fetchTop("infinite", 5),
+      ]);
+
+      renderClassic(classic);
+      renderInfinite(infinite);
+      leaderboardStatus.textContent = "Global leaderboard • shared by all players";
+      leaderboardStatus.classList.add("leaderboard-online");
+    } catch (error) {
+      console.error(error);
+      showLocalFallback("Global leaderboard unavailable — showing local backup.");
     }
   }
 
@@ -154,6 +194,5 @@
     // Ignore blocked storage.
   }
 
-  renderClassic();
-  renderInfinite();
+  loadLeaderboards();
 })();
