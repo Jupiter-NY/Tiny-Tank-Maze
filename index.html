@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tiny Tank Maze</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="home-body">
+  <main class="home-page">
+    <header class="home-hero">
+      <div>
+        <div class="eyebrow">DARK MAZE TANK COMBAT</div>
+        <h1>Tiny Tank Maze</h1>
+        <p>
+          Hunt tanks you cannot see through walls, collect power-ups,
+          and build ridiculous permanent bullet combinations in Infinite mode.
+        </p>
+      </div>
+
+      <div class="name-box">
+        <label for="playerNameInput">Leaderboard name</label>
+        <div class="name-row">
+          <input
+            id="playerNameInput"
+            type="text"
+            maxlength="16"
+            autocomplete="nickname"
+            placeholder="Enter your name"
+          />
+        </div>
+        <div id="nameError" class="name-error" aria-live="polite"></div>
+      </div>
+    </header>
+
+    <section class="mode-grid" aria-label="Game modes">
+      <article class="mode-card">
+        <div class="mode-tag">CLASSIC</div>
+        <h2>Single Maze</h2>
+        <p>
+          Six enemies. One maze. Clear every tank as quickly as possible
+          and push your score onto the Classic leaderboard.
+        </p>
+        <ul>
+          <li>6 enemy tanks</li>
+          <li>Normal power-up spawning</li>
+          <li>Speed + health clear bonuses</li>
+        </ul>
+        <button class="primary-btn mode-button" data-mode="classic">PLAY CLASSIC</button>
+      </article>
+
+      <article class="mode-card featured-mode">
+        <div class="mode-tag">INFINITE</div>
+        <h2>Infinite Waves</h2>
+        <p>
+          Survive wave after wave. Heal fully between waves and permanently
+          mutate your bullets until several upgrades are working together.
+        </p>
+        <ul>
+          <li>2 more enemies every wave</li>
+          <li>Full heal after every clear</li>
+          <li>Choose 1 permanent bullet upgrade after each wave</li>
+        </ul>
+        <button class="primary-btn mode-button" data-mode="infinite">PLAY INFINITE</button>
+      </article>
+    </section>
+
+    <section class="leaderboard-section">
+      <div class="section-heading">
+        <div>
+          <div class="eyebrow">LOCAL RECORDS</div>
+          <h2>Scoreboards</h2>
+        </div>
+        <p>Saved in this browser.</p>
+      </div>
+
+      <div class="leaderboard-grid">
+        <article class="leaderboard-card">
+          <div class="leaderboard-title">
+            <h3>Classic</h3>
+            <span>Top score</span>
+          </div>
+          <ol id="classicScores" class="leaderboard-list"></ol>
+        </article>
+
+        <article class="leaderboard-card">
+          <div class="leaderboard-title">
+            <h3>Infinite</h3>
+            <span>Highest wave</span>
+          </div>
+          <ol id="infiniteScores" class="leaderboard-list"></ol>
+        </article>
+      </div>
+    </section>
+
+    <section class="controls-strip" aria-label="Controls">
+      <span><b>Move</b> WASD</span>
+      <span><b>Aim</b> Mouse</span>
+      <span><b>Shoot</b> Click / Space</span>
+      <span><b>Grenade</b> G</span>
+    </section>
+  </main>
+
+  <script src="home.js"></script>
+</body>
+</html>

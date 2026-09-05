@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tiny Tank Maze — Game</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="game-body">
+  <div class="wrap">
+    <div class="topbar game-topbar">
+      <div>
+        <div class="game-title-line">
+          <h1>Tiny Tank Maze</h1>
+          <span id="modeBadge" class="mode-badge">CLASSIC</span>
+        </div>
+        <p id="modeSubtitle">Clear the maze.</p>
+      </div>
+
+      <div class="top-actions">
+        <div class="controls">
+          <span><b>Move</b> WASD</span>
+          <span><b>Aim</b> Mouse</span>
+          <span><b>Shoot</b> Click / Space</span>
+          <span><b>Grenade</b> G</span>
+        </div>
+        <a class="home-link" href="index.html">HOME</a>
+      </div>
+    </div>
+
+    <div class="game-shell">
+      <canvas id="game" width="1152" height="768" tabindex="0"></canvas>
+
+      <section id="upgradePanel" class="panel hidden">
+        <div class="upgrade-panel-card">
+          <div class="eyebrow">WAVE CLEARED • FULL HEALTH RESTORED</div>
+          <h2 id="upgradeTitle">Choose a permanent modification</h2>
+          <p id="upgradeSubtitle">
+            Upgrades stack. Later choices can strengthen the same mod or combine with different ones.
+          </p>
+          <div id="upgradeChoices" class="upgrade-grid"></div>
+        </div>
+      </section>
+
+      <section id="messagePanel" class="panel hidden">
+        <div class="result-card">
+          <div class="eyebrow" id="resultEyebrow">ROUND COMPLETE</div>
+          <h2 id="messageTitle">Round Over</h2>
+          <p id="messageText"></p>
+          <div id="finalScore" class="final-score">0</div>
+          <div id="finalMods" class="final-mods"></div>
+          <div class="result-actions">
+            <button id="restartBtn" class="primary-btn">PLAY AGAIN</button>
+            <a href="index.html" class="secondary-btn button-link">HOME</a>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="legend">
+      <span>Green = you</span>
+      <span>Red = enemies</span>
+      <span>Blue = vision</span>
+      <span>Yellow = rapid fire</span>
+      <span>Pink = repair</span>
+      <span>Orange G = grenades</span>
+      <span>Purple P = enemy ping</span>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
