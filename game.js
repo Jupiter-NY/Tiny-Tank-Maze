@@ -71,7 +71,7 @@
       ? "infinite"
       : "classic";
 
-  const BULLET_UPGRADES = [
+  const PERMANENT_UPGRADES = [
     {
       id: "rapid",
       icon: "R",
@@ -101,6 +101,18 @@
       icon: "D",
       name: "Heavy Rounds",
       description: "Increase direct bullet damage. Combines especially well with rapid fire and ricochet.",
+    },
+    {
+      id: "maxhp",
+      icon: "H",
+      name: "Reinforced Hull",
+      description: "Increase maximum health by 25 per stack and immediately fill the new health.",
+    },
+    {
+      id: "regen",
+      icon: "+",
+      name: "Repair Nanobots",
+      description: "Slowly regenerate health after you avoid damage for a few seconds. Stacks increase the rate.",
     },
   ];
 
@@ -207,11 +219,63 @@
   }
 
   function enemyCountForWave(wave) {
-    return 6 + Math.max(0, wave - 1) * 2;
+    // Engagement ramp:
+    // Waves 1-5 grow predictably without extra pressure modifiers.
+    // From wave 6 onward, additional enemies begin appearing.
+    const baseGrowth = Math.max(0, wave - 1) * 2;
+    const pressureBonus =
+      wave >= 6 ? Math.floor((wave - 6) / 3) + 1 : 0;
+
+    return 6 + baseGrowth + pressureBonus;
+  }
+
+  function getEnemyScaling(wave) {
+    const w = Math.max(1, wave);
+
+    // Waves 1-5 use the original easy enemy stats.
+    if (w <= 5) {
+      return {
+        maxHp: 60,
+        damage: 20,
+        speedBonus: 0,
+        fireRateMultiplier: 1,
+        bulletSpeed: 310,
+      };
+    }
+
+    // Scaling starts at wave 6 and ramps from there.
+    const scaledWave = w - 5;
+
+    return {
+      maxHp: Math.round(60 * (1 + scaledWave * 0.075)),
+      damage: Math.round(20 + scaledWave * 1.25),
+      speedBonus: Math.min(28, scaledWave * 1.25),
+      fireRateMultiplier: Math.max(0.70, 1 - scaledWave * 0.018),
+      bulletSpeed: Math.min(405, 310 + scaledWave * 5),
+    };
+  }
+
+  function rollEnemyTraits(wave) {
+    if (MODE !== "infinite" || wave <= 5) {
+      return { rapid: false, explosive: false };
+    }
+
+    // Wave 6 introduces rapid enemies gently.
+    const rapidChance =
+      wave >= 6 ? Math.min(0.42, 0.10 + (wave - 6) * 0.025) : 0;
+
+    // Explosive enemies arrive later so the first difficulty jump is readable.
+    const explosiveChance =
+      wave >= 8 ? Math.min(0.40, 0.10 + (wave - 8) * 0.025) : 0;
+
+    return {
+      rapid: Math.random() < rapidChance,
+      explosive: Math.random() < explosiveChance,
+    };
   }
 
   function getUpgradeById(id) {
-    return BULLET_UPGRADES.find((upgrade) => upgrade.id === id);
+    return PERMANENT_UPGRADES.find((upgrade) => upgrade.id === id);
   }
 
   function getUpgradeStack(id) {
@@ -243,6 +307,14 @@
       return `${30 + nextStack * 8} direct damage`;
     }
 
+    if (id === "maxhp") {
+      return `${100 + nextStack * 25} maximum HP`;
+    }
+
+    if (id === "regen") {
+      return `${(nextStack * 1.2).toFixed(1)} HP/sec after 4s without damage`;
+    }
+
     return "";
   }
 
@@ -250,16 +322,16 @@
     if (!player?.mods) return "";
 
     const labels = [];
-    for (const upgrade of BULLET_UPGRADES) {
+    for (const upgrade of PERMANENT_UPGRADES) {
       const stack = getUpgradeStack(upgrade.id);
       if (stack > 0) labels.push(`${upgrade.name} ×${stack}`);
     }
 
-    return labels.length ? labels.join(" • ") : "No permanent bullet modifications";
+    return labels.length ? labels.join(" • ") : "No permanent upgrades";
   }
 
   function chooseUpgradeSet(count = 3) {
-    const pool = BULLET_UPGRADES.slice();
+    const pool = PERMANENT_UPGRADES.slice();
 
     for (let i = pool.length - 1; i > 0; i--) {
       const j = randInt(i + 1);
@@ -306,6 +378,11 @@
     if (!waveTransitioning || MODE !== "infinite") return;
 
     player.mods[id] = getUpgradeStack(id) + 1;
+
+    if (id === "maxhp") {
+      player.maxHp = 100 + getUpgradeStack("maxhp") * 25;
+      player.hp = player.maxHp;
+    }
 
     roundNumber++;
     upgradePanel.classList.add("hidden");
@@ -604,13 +681,26 @@
 
       const pos = cellCenter(cell.c, cell.r);
 
+      const scaling = getEnemyScaling(roundNumber);
+      const traits = rollEnemyTraits(roundNumber);
+      const rapidMultiplier = traits.rapid ? 0.55 : 1;
+
       enemies.push({
         x: pos.x,
         y: pos.y,
         bodyAngle: 0,
         turretAngle: 0,
-        hp: 60,
-        speed: 88 + Math.random() * 18,
+        hp: scaling.maxHp,
+        maxHp: scaling.maxHp,
+        bulletDamage: scaling.damage,
+        bulletSpeed: scaling.bulletSpeed,
+        fireDelayMultiplier:
+          scaling.fireRateMultiplier * rapidMultiplier,
+        rapidTrait: traits.rapid,
+        explosiveTrait: traits.explosive,
+        explosiveRadius: Math.min(88, 52 + roundNumber * 2),
+        explosiveDamage: Math.round(scaling.damage * 0.55),
+        speed: 88 + Math.random() * 18 + scaling.speedBonus,
         fireCooldown: 0.5 + Math.random(),
         wanderCell: null,
         rememberPlayerUntil: 0,
@@ -657,7 +747,10 @@
         explosive: 0,
         ricochet: 0,
         damage: 0,
+        maxhp: 0,
+        regen: 0,
       },
+      lastHitAt: -Infinity,
       alive: true,
     };
 
@@ -874,13 +967,16 @@
       fireDelay *= Math.pow(0.82, getUpgradeStack("rapid"));
       if (now < player.rapidUntil) fireDelay *= 0.42;
       fireDelay = Math.max(0.065, fireDelay);
+    } else {
+      fireDelay *= owner.fireDelayMultiplier || 1;
+      fireDelay = Math.max(0.22, fireDelay);
     }
 
     owner.fireCooldown = fireDelay;
 
     const bulletSpeed = isPlayer
       ? speed * Math.pow(1.18, getUpgradeStack("velocity"))
-      : speed;
+      : owner.bulletSpeed || speed;
 
     const muzzle = 22;
     bullets.push({
@@ -890,9 +986,14 @@
       vy: Math.sin(angle) * bulletSpeed,
       owner,
       life: isPlayer ? 2.8 : 2.2,
-      damage: isPlayer ? 30 + getUpgradeStack("damage") * 8 : 20,
+      damage: isPlayer
+        ? 30 + getUpgradeStack("damage") * 8
+        : owner.bulletDamage || 20,
       bouncesLeft: isPlayer ? getUpgradeStack("ricochet") : 0,
       explosiveLevel: isPlayer ? getUpgradeStack("explosive") : 0,
+      enemyExplosive: !isPlayer && Boolean(owner.explosiveTrait),
+      enemyExplosionRadius: !isPlayer ? owner.explosiveRadius || 54 : 0,
+      enemyExplosionDamage: !isPlayer ? owner.explosiveDamage || 0 : 0,
       alive: true,
     });
 
@@ -1037,6 +1138,37 @@
     }
   }
 
+  function explodeEnemyBullet(bullet, x, y, skipPlayerDamage = false) {
+    if (!bullet.enemyExplosive || bullet.owner === player) return;
+
+    const radius = bullet.enemyExplosionRadius || 54;
+    const damage = bullet.enemyExplosionDamage || 10;
+
+    for (let i = 0; i < 22; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 35 + Math.random() * 150;
+
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.2 + Math.random() * 0.45,
+      });
+    }
+
+    if (!skipPlayerDamage && player.alive) {
+      const distance = Math.hypot(player.x - x, player.y - y);
+
+      if (
+        distance <= radius &&
+        hasLineOfSight(x, y, player.x, player.y)
+      ) {
+        damageTank(player, damage, bullet.owner);
+      }
+    }
+  }
+
   function handleWaveCleared() {
     if (waveTransitioning || !player.alive) return;
 
@@ -1067,6 +1199,11 @@
 
   function damageTank(tank, amount, attacker) {
     if (!tank.alive) return;
+
+    if (tank === player && amount > 0) {
+      player.lastHitAt = performance.now() / 1000;
+    }
+
     tank.hp -= amount;
 
     if (tank.hp <= 0) {
@@ -1111,6 +1248,22 @@
     if (!player.alive) return;
 
     player.fireCooldown = Math.max(0, player.fireCooldown - dt);
+
+    if (MODE === "infinite") {
+      const regenStacks = getUpgradeStack("regen");
+      const now = performance.now() / 1000;
+
+      if (
+        regenStacks > 0 &&
+        now - player.lastHitAt >= 4 &&
+        player.hp < player.maxHp
+      ) {
+        player.hp = Math.min(
+          player.maxHp,
+          player.hp + regenStacks * 1.2 * dt
+        );
+      }
+    }
 
     let dx = 0;
     let dy = 0;
@@ -1160,7 +1313,8 @@
         if (pickup.type === "grenade") player.grenades += 2;
         if (pickup.type === "ping") activateEnemyPing();
         if (pickup.type === "heal") {
-          player.hp = Math.min(player.maxHp, player.hp + 40);
+          const healAmount = Math.max(40, Math.round(player.maxHp * 0.30));
+          player.hp = Math.min(player.maxHp, player.hp + healAmount);
         }
       }
     }
@@ -1192,7 +1346,12 @@
       );
 
       if (distanceToPlayer < 320) {
-        shoot(enemy, enemy.turretAngle + (Math.random() - 0.5) * 0.08, 310);
+        const spread = enemy.rapidTrait ? 0.11 : 0.08;
+        shoot(
+          enemy,
+          enemy.turretAngle + (Math.random() - 0.5) * spread,
+          enemy.bulletSpeed || 310
+        );
       }
     }
 
@@ -1310,6 +1469,7 @@
           }
 
           explodePlayerBullet(bullet, bullet.x, bullet.y);
+          explodeEnemyBullet(bullet, bullet.x, bullet.y);
           bullet.alive = false;
           break;
         }
@@ -1324,6 +1484,7 @@
           ) {
             bullet.alive = false;
             damageTank(player, bullet.damage || 20, bullet.owner);
+            explodeEnemyBullet(bullet, bullet.x, bullet.y, true);
             break;
           }
         }
@@ -1446,8 +1607,32 @@
     ctx.fillRect(2, -3, 24, 6);
     ctx.restore();
 
+    if (!isPlayer && (tank.rapidTrait || tank.explosiveTrait)) {
+      ctx.save();
+      ctx.translate(tank.x, tank.y);
+
+      if (tank.rapidTrait) {
+        ctx.strokeStyle = "#ffd45d";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 18, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+      }
+
+      if (tank.explosiveTrait) {
+        ctx.strokeStyle = "#ff9a4d";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, 21, Math.PI * 1.05, Math.PI * 1.95);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
     // HP bar.
-    const hpPercent = Math.max(0, tank.hp / (isPlayer ? tank.maxHp : 60));
+    const tankMaxHp = tank.maxHp || (isPlayer ? player.maxHp : 60);
+    const hpPercent = Math.max(0, tank.hp / tankMaxHp);
     ctx.fillStyle = "rgba(0,0,0,0.65)";
     ctx.fillRect(tank.x - 16, tank.y - 24, 32, 4);
     ctx.fillStyle = isPlayer ? "#64e792" : "#ff7171";
@@ -1485,12 +1670,18 @@
 
     if (isPlayerBullet && b.explosiveLevel > 0) {
       ctx.fillStyle = "#ffb15a";
+    } else if (!isPlayerBullet && b.enemyExplosive) {
+      ctx.fillStyle = "#ff934d";
     } else {
       ctx.fillStyle = isPlayerBullet ? "#f4f7fb" : "#ff7b7b";
     }
 
     ctx.beginPath();
-    ctx.arc(b.x, b.y, BULLET_RADIUS + (b.explosiveLevel > 0 ? 1 : 0), 0, Math.PI * 2);
+    const bulletRadius =
+      BULLET_RADIUS +
+      (b.explosiveLevel > 0 ? 1 : 0) +
+      (b.enemyExplosive ? 1 : 0);
+    ctx.arc(b.x, b.y, bulletRadius, 0, Math.PI * 2);
     ctx.fill();
 
     if (isPlayerBullet && b.bouncesLeft > 0) {
@@ -1699,10 +1890,13 @@
     }
 
     if (MODE === "infinite") {
-      for (const upgrade of BULLET_UPGRADES) {
+      for (const upgrade of PERMANENT_UPGRADES) {
         const stack = getUpgradeStack(upgrade.id);
         if (stack > 0) statuses.push(`${upgrade.icon}×${stack}`);
       }
+
+      if (roundNumber >= 6) statuses.push("RAPID ENEMIES");
+      if (roundNumber >= 8) statuses.push("EXPLOSIVE ENEMIES");
     }
 
     if (statuses.length) {

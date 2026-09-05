@@ -1,94 +1,81 @@
-# Tiny Tank Maze — v4.1 Global Leaderboard
+# Tiny Tank Maze — v4.2 Enemy Scaling
 
-This version adds a real shared/global leaderboard for a GitHub Pages deployment
-using Supabase as the online database.
+This version keeps the global Supabase leaderboard from v4.1 and makes
+Infinite mode ramp much faster.
 
-## Added files
+## Infinite enemy scaling
 
-- `config.js` — your Supabase Project URL + publishable key
-- `leaderboard.js` — shared browser API for global scores
-- `supabase_setup.sql` — database/table/RLS setup
+Enemy quantity still increases every wave, with an additional pressure enemy
+every four waves.
 
-## Setup
+Enemy stats also scale every wave:
 
-### 1. Create a Supabase project
+- maximum health increases about 7.5% of the original base per wave
+- bullet damage rises each wave
+- movement speed rises gradually
+- baseline fire rate becomes faster
+- bullet velocity rises gradually
 
-Create a project in Supabase.
+### Special enemies
 
-### 2. Run the SQL
+- Wave 3+: Rapid enemies can spawn
+  - yellow accent
+  - much shorter firing delay
+- Wave 6+: Explosive enemies can spawn
+  - orange accent
+  - orange explosive bullets
+  - shots explode on walls and can splash the player
+- At later waves enemies can roll both traits.
 
-Open `supabase_setup.sql`, copy all of it, and run it once in the Supabase SQL Editor.
+The chance of special enemies increases as the run continues.
 
-It creates the leaderboard table, enables Row Level Security, grants public
-read + insert only, and does not give browser users update/delete permission.
+## New permanent player upgrades
 
-### 3. Copy your public project credentials
+Infinite-mode upgrade choices now include the original weapon upgrades plus:
 
-In Supabase, copy:
+### Reinforced Hull
+- +25 maximum HP per stack
+- immediately fills the added health
+- wave clears still heal you to full
 
-- Project URL
-- Publishable key (`sb_publishable_...`)
+### Repair Nanobots
+- +1.2 HP/second per stack
+- regeneration begins after 4 seconds without taking damage
+- multiple stacks combine
 
-Do NOT use a secret/service-role key.
+Repair pickups also scale with your maximum health, healing at least 40 HP or
+30% of maximum HP, whichever is larger.
 
-### 4. Edit `config.js`
+## Existing permanent upgrades
 
-Replace the placeholders:
+- Rapid Chamber
+- High Velocity
+- Explosive Rounds
+- Ricochet
+- Heavy Rounds
+- Reinforced Hull
+- Repair Nanobots
 
-```js
-window.TANK_CONFIG = {
-  supabaseUrl: "PASTE_YOUR_SUPABASE_PROJECT_URL_HERE",
-  supabasePublishableKey: "PASTE_YOUR_SUPABASE_PUBLISHABLE_KEY_HERE",
-};
-```
+All upgrades can stack and combine.
 
-with your real values.
+## Global leaderboard
 
-### 5. Push to GitHub Pages
+The global Supabase leaderboard remains unchanged. Updating the website files
+does not erase existing leaderboard rows in Supabase.
 
-Keep these files in the published root:
+Keep your existing `config.js` Supabase URL and publishable key when replacing
+files on GitHub.
 
-```text
-index.html
-game.html
-style.css
-home.js
-game.js
-config.js
-leaderboard.js
-supabase_setup.sql
-README.md
-```
 
-## Behavior
+## v4.3 early-wave engagement curve
 
-- The homepage loads the global Classic and Infinite top-5 leaderboards.
-- Every completed/dead run saves locally first, then submits to Supabase.
-- If Supabase is unconfigured or unavailable, the game still works and the
-  homepage shows local fallback scores.
-- Infinite ranking sorts by highest wave first, then score.
-- Classic ranking sorts by score.
+Infinite mode now deliberately keeps the opening five waves easier:
 
-## Security
+- Waves 1-5 use baseline enemy health, damage, speed, fire rate, and bullet speed.
+- No rapid-fire or explosive enemies can spawn during waves 1-5.
+- Enemy count still rises steadily, so the player feels progression without a sudden stat spike.
+- Wave 6 begins enemy stat scaling and introduces rapid-fire enemies at a low chance.
+- Wave 8 introduces explosive enemies.
+- Special-enemy chances and enemy stats continue scaling after their unlock waves.
 
-This is global, but not cheat-proof.
-
-The game is still fully client-side, so a determined player can modify their
-browser code or manually call the public score endpoint. Database constraints
-stop malformed or absurdly out-of-range records, but they cannot prove a score
-was actually earned.
-
-For a serious competitive leaderboard, score calculation/validation should move
-to an authoritative server or use signed/verifiable run data.
-
-## Run locally
-
-```bash
-python3 -m http.server 8000
-```
-
-Then visit:
-
-```text
-http://localhost:8000
-```
+This gives the player several waves to collect permanent upgrades and build momentum before the harder enemy variants appear.
