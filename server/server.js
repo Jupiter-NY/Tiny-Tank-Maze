@@ -257,6 +257,8 @@ function makePlayer(ws, name) {
     // separate hitbox transform and updates it when client-state packets arrive.
     input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
     lastClientStateAt: nowSeconds(),
+    lastClientStateSeq: 0,
+    clientClockBaselineMs: null,
   };
 }
 function publicLobbyPlayers(room) {
@@ -333,15 +335,28 @@ function resetRoomForGame(room) {
       fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
       input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
       lastClientStateAt: nowSeconds(),
+      lastClientStateSeq: 0,
+      clientClockBaselineMs: null,
     });
   }
   spawnPickup(room, "grenade");
   spawnPickup(room, "heal");
   for (let i = 0; i < 4; i++) spawnPickup(room);
   room.state = "playing";
+  const spawns = {};
+  for (const player of room.players.values()) {
+    spawns[player.id] = {
+      x: player.x,
+      y: player.y,
+      bodyAngle: player.bodyAngle,
+      turretAngle: player.turretAngle,
+    };
+  }
+
   broadcastRoom(room, {
     type: "game_start", roomCode: room.code, maze: room.maze,
     width: W, height: H, cols: COLS, rows: ROWS, cell: CELL, wall: WALL,
+    spawns,
   });
 }
 
@@ -422,20 +437,6 @@ function checkRoundEnd(room) {
   sendRoomUpdate(room);
 }
 
-function pathClearForCircle(room, x1, y1, x2, y2, radius = PLAYER_RADIUS) {
-  const distance = Math.hypot(x2 - x1, y2 - y1);
-  const steps = Math.max(1, Math.ceil(distance / 4));
-
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const x = x1 + (x2 - x1) * t;
-    const y = y1 + (y2 - y1) * t;
-    if (collidesWalls(room, x, y, radius)) return false;
-  }
-
-  return true;
-}
-
 function applyClientTransform(room, player, state) {
   if (!player.alive) return false;
 
@@ -446,20 +447,18 @@ function applyClientTransform(room, player, state) {
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
 
-  const now = nowSeconds();
-  const elapsed = clamp(now - (player.lastClientStateAt || now), 0.001, 2.0);
-
-  // Client movement is trusted for responsiveness, but reject impossible
-  // teleports and paths that cross maze walls.
-  const maxDistance = 165 * elapsed + 24;
-  const distance = Math.hypot(x - player.x, y - player.y);
-
-  if (distance > maxDistance) return false;
-  if (!pathClearForCircle(room, player.x, player.y, x, y, PLAYER_RADIUS)) return false;
+  // v5.5: never let a missed/late packet leave the server hitbox permanently
+  // behind the visual tank. The previous straight-line path test could reject
+  // perfectly valid movement around corners because two 20 Hz samples were
+  // connected by a chord that clipped a wall.
+  //
+  // Only reject a reported position if the tank itself would end inside a wall.
+  // Otherwise the server hitbox teleports directly to the newest client state.
+  if (collidesWalls(room, x, y, PLAYER_RADIUS)) return false;
 
   player.x = x;
   player.y = y;
-  player.lastClientStateAt = now;
+  player.lastClientStateAt = nowSeconds();
 
   if (Number.isFinite(bodyAngle)) player.bodyAngle = bodyAngle;
   if (Number.isFinite(turretAngle)) {
@@ -612,6 +611,37 @@ function handleMessage(player, message) {
   }
   if (type === "client_state" && room.state === "playing") {
     const state = message.state || {};
+    const seq = Number(state.seq);
+    const clientTime = Number(state.clientTime);
+
+    if (!Number.isSafeInteger(seq) || seq <= player.lastClientStateSeq) return;
+    if (!Number.isFinite(clientTime)) return;
+
+    const nowMs = Date.now();
+    const clockSample = nowMs - clientTime;
+
+    // The minimum observed server-minus-client time approximates clock skew
+    // plus the best network latency seen on this connection.
+    if (
+      player.clientClockBaselineMs === null ||
+      clockSample < player.clientClockBaselineMs
+    ) {
+      player.clientClockBaselineMs = clockSample;
+    }
+
+    const estimatedQueueAge =
+      clockSample - player.clientClockBaselineMs;
+
+    // During a WebSocket/TCP stall, old reliable packets may arrive later in
+    // order. Do NOT replay those stale historical positions. Leave the server
+    // hitbox stationary until a fresh transform reaches us, then jump directly
+    // to that newest state.
+    if (estimatedQueueAge > 220) {
+      player.lastClientStateSeq = seq;
+      return;
+    }
+
+    player.lastClientStateSeq = seq;
     const accepted = applyClientTransform(room, player, state);
 
     if (accepted) {
@@ -623,8 +653,6 @@ function handleMessage(player, message) {
         player.turretAngle = aim;
       }
 
-      // A mouse-down packet can request an immediate authoritative shot after
-      // the newest transform is accepted.
       if (state.fireNow) shoot(room, player);
     }
     return;
