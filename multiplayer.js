@@ -49,6 +49,10 @@
   let lastFrame = performance.now();
   let ready = false;
   let connectingAction = null;
+  let predictedSelf = null;
+  let pingMs = null;
+  let lastPingSentAt = 0;
+  let lastInputSentAt = 0;
 
   const keys = { up: false, down: false, left: false, right: false, shooting: false };
   const mouse = { x: W / 2, y: H / 2, down: false };
@@ -70,6 +74,13 @@
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
   }
 
+  function updateConnectionStatus() {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    connectionStatus.textContent = pingMs == null
+      ? "Connected • measuring ping…"
+      : `Connected • ${Math.round(pingMs)} ms ping`;
+  }
+
   function connectThen(action) {
     showError("");
     if (!configured()) {
@@ -86,7 +97,10 @@
     joinBtn.disabled = true;
     socket = new WebSocket(serverUrl);
     socket.addEventListener("open", () => {
-      connectionStatus.textContent = "Connected • room-code free-for-all";
+      pingMs = null;
+      updateConnectionStatus();
+      lastPingSentAt = performance.now();
+      safeSend({ type: "ping", sentAt: lastPingSentAt });
       createBtn.disabled = false;
       joinBtn.disabled = false;
       if (connectingAction) { const fn = connectingAction; connectingAction = null; fn(); }
@@ -126,6 +140,15 @@
       myId = message.playerId;
       return;
     }
+    if (message.type === "pong") {
+      const sentAt = Number(message.sentAt);
+      if (Number.isFinite(sentAt) && sentAt > 0) {
+        const sample = Math.max(0, performance.now() - sentAt);
+        pingMs = pingMs == null ? sample : pingMs * 0.7 + sample * 0.3;
+        updateConnectionStatus();
+      }
+      return;
+    }
     if (message.type === "error") {
       showError(message.message || "Server error.");
       lobbyMessage.textContent = message.message || "Server error.";
@@ -157,6 +180,7 @@
       maze = message.maze || [];
       buildWalls();
       renderPlayers.clear();
+      predictedSelf = null;
       state = null;
       lobbyPanel.classList.add("hidden");
       roundPanel.classList.add("hidden");
@@ -165,7 +189,31 @@
     }
     if (message.type === "state") {
       state = message;
-      updateRenderTargets(message.players || []);
+      updateRenderTargets((message.players || []).filter((p) => p.id !== myId));
+
+      const authoritative = message.self;
+      if (authoritative) {
+        if (!predictedSelf || !authoritative.alive) {
+          predictedSelf = {
+            x: authoritative.x,
+            y: authoritative.y,
+            bodyAngle: authoritative.bodyAngle,
+            turretAngle: authoritative.turretAngle,
+          };
+        } else {
+          const dx = authoritative.x - predictedSelf.x;
+          const dy = authoritative.y - predictedSelf.y;
+          const error = Math.hypot(dx, dy);
+
+          if (error > 70) {
+            predictedSelf.x = authoritative.x;
+            predictedSelf.y = authoritative.y;
+          } else if (!(keys.up || keys.down || keys.left || keys.right)) {
+            predictedSelf.x += dx * 0.35;
+            predictedSelf.y += dy * 0.35;
+          }
+        }
+      }
       return;
     }
     if (message.type === "round_end") {
@@ -228,6 +276,51 @@
     }
   }
 
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+  function circleRectCollision(x, y, radius, rect) {
+    const cx = clamp(x, rect.x, rect.x + rect.w);
+    const cy = clamp(y, rect.y, rect.y + rect.h);
+    const dx = x - cx, dy = y - cy;
+    return dx * dx + dy * dy < radius * radius;
+  }
+  function predictedCollidesWalls(x, y, radius = 14) {
+    return wallRects.some((rect) => circleRectCollision(x, y, radius, rect));
+  }
+  function updateLocalPrediction(dt) {
+    if (roomState !== "playing" || !state?.self?.alive) return;
+    if (!predictedSelf) {
+      predictedSelf = {
+        x: state.self.x, y: state.self.y,
+        bodyAngle: state.self.bodyAngle, turretAngle: state.self.turretAngle,
+      };
+    }
+
+    let dx = 0, dy = 0;
+    if (keys.up) dy -= 1;
+    if (keys.down) dy += 1;
+    if (keys.left) dx -= 1;
+    if (keys.right) dx += 1;
+
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy);
+      dx /= len; dy /= len;
+      predictedSelf.bodyAngle = Math.atan2(dy, dx);
+
+      const speed = 165;
+      const nx = predictedSelf.x + dx * speed * dt;
+      if (!predictedCollidesWalls(nx, predictedSelf.y)) predictedSelf.x = nx;
+      const ny = predictedSelf.y + dy * speed * dt;
+      if (!predictedCollidesWalls(predictedSelf.x, ny)) predictedSelf.y = ny;
+    }
+
+    predictedSelf.turretAngle = Math.atan2(
+      mouse.y - predictedSelf.y,
+      mouse.x - predictedSelf.x
+    );
+  }
+
   function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
     const sx = x2 - x1, sy = y2 - y1, denom = dx * sy - dy * sx;
     if (Math.abs(denom) < 1e-8) return null;
@@ -247,7 +340,7 @@
   function buildVisibilityPolygon(self) {
     const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
     const angles = [];
-    const rays = 320;
+    const rays = 220;
     for (let i = 0; i < rays; i++) angles.push((i / rays) * Math.PI * 2);
     const eps = 0.00018, r2 = (radius + 80) ** 2;
     for (const s of wallSegments) {
@@ -373,18 +466,21 @@
     for (const p of state.pickups || []) drawPickup(p);
     for (const b of state.bullets || []) { ctx.fillStyle = b.ownerId === myId ? "#f4f7fb" : "#ff7b7b"; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
     for (const g of state.grenades || []) { ctx.fillStyle = "#ff9a4d"; ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill(); }
-    for (const p of renderPlayers.values()) if (p.id !== myId) drawTank(p, false);
-    drawFog(state.self);
+    for (const p of renderPlayers.values()) drawTank(p, false);
+    const visualSelf = predictedSelf ? { ...state.self, ...predictedSelf } : state.self;
+    drawFog(visualSelf);
     for (const ping of state.pings || []) { ctx.strokeStyle = "#b6aaff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ping.x, ping.y, 18 + (1.5 - ping.left) * 16, 0, Math.PI * 2); ctx.stroke(); }
-    const selfRender = renderPlayers.get(myId) || state.self;
-    drawTank({ ...selfRender, ...state.self }, true);
+    drawTank(visualSelf, true);
     drawHud(state.self); drawFeed(state.feed);
     if (!state.self.alive && roomState === "playing") { ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(0, 0, W, H); ctx.fillStyle = "#fff"; ctx.font = "900 26px system-ui"; ctx.textAlign = "center"; ctx.fillText("DESTROYED — WAITING FOR ROUND END", W / 2, 56); }
   }
 
   function frame(now) {
     const dt = Math.min(0.05, (now - lastFrame) / 1000); lastFrame = now;
-    smoothEntities(dt); draw(); requestAnimationFrame(frame);
+    updateLocalPrediction(dt);
+    smoothEntities(dt);
+    draw();
+    requestAnimationFrame(frame);
   }
 
   function getMousePosition(event) {
@@ -392,10 +488,18 @@
     mouse.x = (event.clientX - rect.left) / rect.width * W;
     mouse.y = (event.clientY - rect.top) / rect.height * H;
   }
-  function sendInput() {
+  function sendInput(force = false) {
     if (roomState !== "playing" || !state?.self) return;
-    const aim = Math.atan2(mouse.y - state.self.y, mouse.x - state.self.x);
-    safeSend({ type: "input", input: { ...keys, shooting: mouse.down || keys.shooting, aim } });
+    const now = performance.now();
+    if (!force && now - lastInputSentAt < 32) return;
+    lastInputSentAt = now;
+
+    const self = predictedSelf || state.self;
+    const aim = Math.atan2(mouse.y - self.y, mouse.x - self.x);
+    safeSend({
+      type: "input",
+      input: { ...keys, shooting: mouse.down || keys.shooting, aim }
+    });
   }
 
   window.addEventListener("keydown", (e) => {
@@ -409,7 +513,7 @@
     if (k === " ") keys.shooting = true;
     if (k === "g" && !e.repeat) safeSend({ type: "grenade" });
     if (["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," ","g"].includes(k)) e.preventDefault();
-    sendInput();
+    sendInput(true);
   });
   window.addEventListener("keyup", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -419,12 +523,28 @@
     if (k === "a" || k === "arrowleft") keys.left = false;
     if (k === "d" || k === "arrowright") keys.right = false;
     if (k === " ") keys.shooting = false;
-    sendInput();
+    sendInput(true);
   });
-  canvas.addEventListener("mousemove", (e) => { getMousePosition(e); sendInput(); });
-  canvas.addEventListener("mousedown", (e) => { getMousePosition(e); mouse.down = true; sendInput(); });
-  window.addEventListener("mouseup", () => { mouse.down = false; sendInput(); });
-  setInterval(sendInput, 50);
+  canvas.addEventListener("mousemove", (e) => {
+    getMousePosition(e);
+  });
+  canvas.addEventListener("mousedown", (e) => {
+    getMousePosition(e);
+    mouse.down = true;
+    sendInput(true);
+  });
+  window.addEventListener("mouseup", () => {
+    mouse.down = false;
+    sendInput(true);
+  });
+
+  setInterval(() => sendInput(false), 1000 / 30);
+
+  setInterval(() => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    lastPingSentAt = performance.now();
+    safeSend({ type: "ping", sentAt: lastPingSentAt });
+  }, 2000);
 
   createBtn.addEventListener("click", createRoom);
   joinBtn.addEventListener("click", joinRoom);
