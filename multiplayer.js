@@ -34,7 +34,7 @@
   const BASE_VISION = 235;
   const PLAYER_NAME_KEY = "tinyTankMazePlayerName";
   const serverUrl = String(window.TANK_CONFIG?.multiplayerServer || "").trim();
-  const CLIENT_VERSION = "5.8.1";
+  const CLIENT_VERSION = "5.8.2";
 
   let lastRenderErrorText = "";
   let lastRenderErrorAt = 0;
@@ -677,7 +677,12 @@
 
     angles.sort((a, b) => a - b);
 
+    let previousAngle;
     for (const angle of angles) {
+      // Shared endpoints and collinear corners can produce identical rays.
+      // Trace each exact angle once; keep nearby but distinct corner rays.
+      if (angle === previousAngle) continue;
+      previousAngle = angle;
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
       let distance = radius;
