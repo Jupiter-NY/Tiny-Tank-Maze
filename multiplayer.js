@@ -34,6 +34,10 @@
   const BASE_VISION = 235;
   const PLAYER_NAME_KEY = "tinyTankMazePlayerName";
   const serverUrl = String(window.TANK_CONFIG?.multiplayerServer || "").trim();
+  const CLIENT_VERSION = "5.8.0";
+
+  let lastRenderErrorText = "";
+  let lastRenderErrorAt = 0;
 
   let socket = null;
   let myId = null;
@@ -49,20 +53,21 @@
   let lastFrame = performance.now();
   let ready = false;
   let connectingAction = null;
-  let predictedSelf = null;
   let pingMs = null;
   let lastPingSentAt = 0;
 
-  // v5.2 local prediction / reconciliation.
-  const CLIENT_SIM_STEP = 1 / 60;
-  let simAccumulator = 0;
-  let nextInputSeq = 1;
-  let pendingInputs = [];
-  let unsentInputs = [];
+  // v5.3: localVisual is the tank this player actually sees. It is never
+  // reconciled or snapped to server snapshots while alive.
+  let localVisual = null;
+  let lastClientStateSentAt = 0;
+  let nextClientStateSeq = 1;
+  let pendingClientState = null;
+  let pendingFire = false;
 
-  // v5.2 remote snapshot interpolation.
+  // Remote players render the server hitbox/state through a jitter buffer.
+  // v5.6 deliberately does not extrapolate during missing snapshots.
   const remoteHistories = new Map();
-  const MAX_EXTRAPOLATION_MS = 120;
+  const MAX_EXTRAPOLATION_MS = 0;
   let serverClockOffsetMs = 0;
   let hasClockSync = false;
   let jitterMs = 0;
@@ -208,12 +213,20 @@
       buildWalls();
       renderPlayers.clear();
       remoteHistories.clear();
-      predictedSelf = null;
+      const spawn = message.spawns?.[myId];
+      localVisual = spawn
+        ? {
+            x: spawn.x,
+            y: spawn.y,
+            bodyAngle: spawn.bodyAngle,
+            turretAngle: spawn.turretAngle,
+          }
+        : null;
       state = null;
-      simAccumulator = 0;
-      nextInputSeq = 1;
-      pendingInputs = [];
-      unsentInputs = [];
+      lastClientStateSentAt = 0;
+      nextClientStateSeq = 1;
+      pendingClientState = null;
+      pendingFire = false;
       previousSnapshotArrival = null;
       previousSnapshotServerTime = null;
       jitterMs = 0;
@@ -230,14 +243,27 @@
         (message.players || []).filter((p) => p.id !== myId),
         Number(message.t) || Date.now()
       );
-      reconcileLocalPlayer(message.self);
+
+      // Backward-compatible fallback only for an older server that did not put
+      // our spawn in game_start. Once localVisual exists, state.self x/y is
+      // never consumed again.
+      if (!localVisual && message.self) {
+        localVisual = {
+          x: message.self.x,
+          y: message.self.y,
+          bodyAngle: message.self.bodyAngle,
+          turretAngle: message.self.turretAngle,
+        };
+      }
+
+      // Never consume authoritative self x/y after initialization.
       return;
     }
     if (message.type === "round_end") {
       roomState = "ended";
       mouse.down = false;
       keys.shooting = false;
-      queueInstantInput();
+      sendClientState({ force: true });
       winnerTitle.textContent = message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
       const me = state?.self;
       winnerText.textContent = `Your kills: ${me?.kills || 0}. The host can start another match in the same room.`;
@@ -305,69 +331,11 @@
   function predictedCollidesWalls(x, y, radius = 14) {
     return wallRects.some((rect) => circleRectCollision(x, y, radius, rect));
   }
-  function simulateCommand(entity, command) {
-    const input = command.input;
-    let dx = 0, dy = 0;
-
-    if (input.up) dy -= 1;
-    if (input.down) dy += 1;
-    if (input.left) dx -= 1;
-    if (input.right) dx += 1;
-
-    if (dx || dy) {
-      const len = Math.hypot(dx, dy);
-      dx /= len;
-      dy /= len;
-      entity.bodyAngle = Math.atan2(dy, dx);
-
-      const nx = entity.x + dx * 165 * command.dt;
-      if (!predictedCollidesWalls(nx, entity.y)) entity.x = nx;
-
-      const ny = entity.y + dy * 165 * command.dt;
-      if (!predictedCollidesWalls(entity.x, ny)) entity.y = ny;
-    }
-
-    if (Number.isFinite(input.aim)) entity.turretAngle = input.aim;
-  }
-
-  function makeInputCommand(dt) {
-    if (roomState !== "playing" || !state?.self?.alive || !predictedSelf) return null;
-
-    const aim = Math.atan2(
-      mouse.y - predictedSelf.y,
-      mouse.x - predictedSelf.x
-    );
-
-    return {
-      seq: nextInputSeq++,
-      dt,
-      input: {
-        ...keys,
-        shooting: mouse.down || keys.shooting,
-        aim,
-      },
-    };
-  }
-
-  function queueInputCommand(dt) {
-    const command = makeInputCommand(dt);
-    if (!command) return;
-
-    simulateCommand(predictedSelf, command);
-    pendingInputs.push(command);
-    unsentInputs.push(command);
-
-    // Four seconds of unacknowledged commands means the connection is badly
-    // stalled. Keep memory bounded; reconciliation will snap to the server.
-    if (pendingInputs.length > 240) pendingInputs = pendingInputs.slice(-240);
-    if (unsentInputs.length > 120) unsentInputs = unsentInputs.slice(-120);
-  }
-
-  function advanceLocalSimulation(dt) {
+  function updateLocalVisual(dt) {
     if (roomState !== "playing" || !state?.self?.alive) return;
 
-    if (!predictedSelf) {
-      predictedSelf = {
+    if (!localVisual) {
+      localVisual = {
         x: state.self.x,
         y: state.self.y,
         bodyAngle: state.self.bodyAngle,
@@ -375,82 +343,83 @@
       };
     }
 
-    simAccumulator = Math.min(0.1, simAccumulator + dt);
-    while (simAccumulator >= CLIENT_SIM_STEP) {
-      queueInputCommand(CLIENT_SIM_STEP);
-      simAccumulator -= CLIENT_SIM_STEP;
+    let dx = 0, dy = 0;
+    if (keys.up) dy -= 1;
+    if (keys.down) dy += 1;
+    if (keys.left) dx -= 1;
+    if (keys.right) dx += 1;
+
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy);
+      dx /= len;
+      dy /= len;
+      localVisual.bodyAngle = Math.atan2(dy, dx);
+
+      const nx = localVisual.x + dx * 165 * dt;
+      if (!predictedCollidesWalls(nx, localVisual.y)) localVisual.x = nx;
+
+      const ny = localVisual.y + dy * 165 * dt;
+      if (!predictedCollidesWalls(localVisual.x, ny)) localVisual.y = ny;
     }
+
+    localVisual.turretAngle = Math.atan2(
+      mouse.y - localVisual.y,
+      mouse.x - localVisual.x
+    );
   }
 
-  function reconcileLocalPlayer(authoritative) {
-    if (!authoritative) return;
-
-    if (!authoritative.alive) {
-      pendingInputs = [];
-      unsentInputs = [];
-      predictedSelf = {
-        x: authoritative.x,
-        y: authoritative.y,
-        bodyAngle: authoritative.bodyAngle,
-        turretAngle: authoritative.turretAngle,
-      };
-      return;
-    }
-
-    const ack = Number(authoritative.lastProcessedInputSeq) || 0;
-    pendingInputs = pendingInputs.filter((command) => command.seq > ack);
-    unsentInputs = unsentInputs.filter((command) => command.seq > ack);
-
-    // Rewind to the server's authoritative transform...
-    predictedSelf = {
-      x: authoritative.x,
-      y: authoritative.y,
-      bodyAngle: authoritative.bodyAngle,
-      turretAngle: authoritative.turretAngle,
+  function buildClientState(fireNow = false) {
+    return {
+      type: "client_state",
+      state: {
+        seq: nextClientStateSeq++,
+        clientTime: Date.now(),
+        x: localVisual.x,
+        y: localVisual.y,
+        bodyAngle: localVisual.bodyAngle,
+        turretAngle: localVisual.turretAngle,
+        shooting: mouse.down || keys.shooting,
+        fireNow,
+      },
     };
-
-    // ...then replay every local command the server has not acknowledged yet.
-    for (const command of pendingInputs) {
-      simulateCommand(predictedSelf, command);
-    }
   }
 
-  function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
-    const sx = x2 - x1, sy = y2 - y1, denom = dx * sy - dy * sx;
-    if (Math.abs(denom) < 1e-8) return null;
-    const qpx = x1 - px, qpy = y1 - py;
-    const t = (qpx * sy - qpy * sx) / denom;
-    const u = (qpx * dy - qpy * dx) / denom;
-    return t >= 0 && u >= 0 && u <= 1 ? t : null;
-  }
-  function raycastDistance(x, y, angle, maxDistance) {
-    const dx = Math.cos(angle), dy = Math.sin(angle); let best = maxDistance;
-    for (const s of wallSegments) {
-      const t = raySegmentIntersection(x, y, dx, dy, s[0], s[1], s[2], s[3]);
-      if (t !== null && t < best) best = t;
+  function flushLatestClientState() {
+    if (socket?.readyState !== WebSocket.OPEN || !pendingClientState) return;
+
+    // Never pile more movement history behind an already-backed-up WebSocket.
+    // Keep only one latest JS-side state while the transport drains.
+    if (socket.bufferedAmount > 1024) return;
+
+    const payload = pendingClientState;
+    pendingClientState = null;
+
+    if (pendingFire) {
+      payload.state.fireNow = true;
+      pendingFire = false;
     }
-    return Math.max(0, best - 0.8);
+
+    socket.send(JSON.stringify(payload));
   }
-  function buildVisibilityPolygon(self) {
-    const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
-    const angles = [];
-    const rays = 220;
-    for (let i = 0; i < rays; i++) angles.push((i / rays) * Math.PI * 2);
-    const eps = 0.00018, r2 = (radius + 80) ** 2;
-    for (const s of wallSegments) {
-      for (const point of [[s[0], s[1]], [s[2], s[3]]]) {
-        const dx = point[0] - self.x, dy = point[1] - self.y;
-        if (dx * dx + dy * dy > r2) continue;
-        let a = Math.atan2(dy, dx);
-        if (a < 0) a += Math.PI * 2;
-        angles.push((a - eps + Math.PI * 2) % (Math.PI * 2), a, (a + eps) % (Math.PI * 2));
-      }
-    }
-    angles.sort((a, b) => a - b);
-    return angles.map((a) => {
-      const d = raycastDistance(self.x, self.y, a, radius);
-      return { x: self.x + Math.cos(a) * d, y: self.y + Math.sin(a) * d };
-    });
+
+  function sendClientState({ fireNow = false, force = false } = {}) {
+    if (
+      roomState !== "playing" ||
+      socket?.readyState !== WebSocket.OPEN ||
+      !state?.self?.alive ||
+      !localVisual
+    ) return;
+
+    const now = performance.now();
+    if (!force && now - lastClientStateSentAt < 30) return;
+    lastClientStateSentAt = now;
+
+    if (fireNow) pendingFire = true;
+
+    // Overwrite the previous unsent transform. There is no reason to deliver
+    // historical movement positions once a newer position exists.
+    pendingClientState = buildClientState(false);
+    flushLatestClientState();
   }
 
   function lerpAngle(a, b, t) {
@@ -591,6 +560,145 @@
     }
   }
 
+  function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
+    const sx = x2 - x1;
+    const sy = y2 - y1;
+    const denominator = dx * sy - dy * sx;
+
+    if (Math.abs(denominator) < 1e-9) return null;
+
+    const qx = x1 - px;
+    const qy = y1 - py;
+
+    const t = (qx * sy - qy * sx) / denominator;
+    const u = (qx * dy - qy * dx) / denominator;
+
+    if (t < 0 || u < 0 || u > 1) return null;
+
+    return {
+      x: px + dx * t,
+      y: py + dy * t,
+      distance: t,
+    };
+  }
+
+  function buildVisibilityPolygon(self) {
+    if (
+      !self ||
+      !Number.isFinite(self.x) ||
+      !Number.isFinite(self.y)
+    ) {
+      return [];
+    }
+
+    const radius =
+      BASE_VISION * (Number(self.visionLeft) > 0 ? 1.55 : 1);
+
+    const angles = [];
+    const points = [];
+    const baseRays = 240;
+
+    for (let i = 0; i < baseRays; i++) {
+      angles.push((i / baseRays) * Math.PI * 2);
+    }
+
+    // Add rays just to either side of every wall endpoint so corners block
+    // light cleanly instead of leaving visible cracks.
+    for (const segment of wallSegments) {
+      const endpoints = [
+        [segment[0], segment[1]],
+        [segment[2], segment[3]],
+      ];
+
+      for (const [x, y] of endpoints) {
+        const angle = Math.atan2(y - self.y, x - self.x);
+        angles.push(angle - 0.0008, angle, angle + 0.0008);
+      }
+    }
+
+    angles.sort((a, b) => a - b);
+
+    for (const angle of angles) {
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      let distance = radius;
+
+      for (const segment of wallSegments) {
+        const hit = raySegmentIntersection(
+          self.x,
+          self.y,
+          dx,
+          dy,
+          segment[0],
+          segment[1],
+          segment[2],
+          segment[3]
+        );
+
+        if (
+          hit &&
+          Number.isFinite(hit.distance) &&
+          hit.distance < distance
+        ) {
+          distance = Math.max(0, hit.distance - 1.5);
+        }
+      }
+
+      points.push({
+        x: self.x + dx * distance,
+        y: self.y + dy * distance,
+      });
+    }
+
+    return points;
+  }
+
+  function reportRenderError(error, stage = "render") {
+    const message = error instanceof Error ? error.message : String(error);
+    const signature = `${stage}: ${message}`;
+    const now = performance.now();
+
+    if (signature !== lastRenderErrorText || now - lastRenderErrorAt > 3000) {
+      console.error(`[Tiny Tank ${CLIENT_VERSION}] ${signature}`, error);
+      lastRenderErrorText = signature;
+      lastRenderErrorAt = now;
+    }
+
+    if (connectionStatus) {
+      connectionStatus.textContent =
+        `Connected • renderer recovered (${stage}) • client ${CLIENT_VERSION}`;
+    }
+  }
+
+  function drawEmergencyFog(self) {
+    // Independent fallback: no raycaster, no wall geometry. This guarantees
+    // that the game remains dark even if the advanced flashlight code fails.
+    fogCtx.save();
+    fogCtx.globalCompositeOperation = "source-over";
+    fogCtx.clearRect(0, 0, W, H);
+    fogCtx.fillStyle = "rgba(0,0,0,.975)";
+    fogCtx.fillRect(0, 0, W, H);
+
+    if (self && Number.isFinite(self.x) && Number.isFinite(self.y)) {
+      const radius = BASE_VISION;
+      fogCtx.globalCompositeOperation = "destination-out";
+      const gradient = fogCtx.createRadialGradient(
+        self.x, self.y, 24,
+        self.x, self.y, radius
+      );
+      gradient.addColorStop(0, "rgba(255,255,255,1)");
+      gradient.addColorStop(0.75, "rgba(255,255,255,.98)");
+      gradient.addColorStop(1, "rgba(255,255,255,0)");
+      fogCtx.fillStyle = gradient;
+      fogCtx.beginPath();
+      fogCtx.arc(self.x, self.y, radius, 0, Math.PI * 2);
+      fogCtx.fill();
+    }
+
+    fogCtx.restore();
+    ctx.drawImage(fogCanvas, 0, 0);
+  }
+
   function drawMaze() {
     ctx.fillStyle = "#11151d"; ctx.fillRect(0, 0, W, H);
     ctx.strokeStyle = "#171d27"; ctx.lineWidth = 1;
@@ -624,22 +732,36 @@
     }
   }
   function drawFog(self) {
-    const points = buildVisibilityPolygon(self);
-    fogCtx.clearRect(0, 0, W, H); fogCtx.fillStyle = "rgba(0,0,0,.975)"; fogCtx.fillRect(0, 0, W, H);
-    if (points.length < 3) { ctx.drawImage(fogCanvas, 0, 0); return; }
-    const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
-    fogCtx.save(); fogCtx.globalCompositeOperation = "destination-out";
-    fogCtx.beginPath(); fogCtx.moveTo(points[0].x, points[0].y);
-    for (let i = 1; i < points.length; i++) fogCtx.lineTo(points[i].x, points[i].y);
-    fogCtx.closePath(); fogCtx.clip();
-    const grad = fogCtx.createRadialGradient(self.x, self.y, Math.max(0, radius - 42), self.x, self.y, radius);
-    grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(.7, "rgba(255,255,255,.97)"); grad.addColorStop(1, "rgba(255,255,255,.15)");
-    fogCtx.fillStyle = grad; fogCtx.fillRect(self.x - radius, self.y - radius, radius * 2, radius * 2);
-    fogCtx.restore();
-    fogCtx.save(); fogCtx.globalCompositeOperation = "destination-out"; fogCtx.fillStyle = "#fff";
-    fogCtx.beginPath(); fogCtx.arc(self.x, self.y, 32, 0, Math.PI * 2); fogCtx.fill(); fogCtx.restore();
-    ctx.drawImage(fogCanvas, 0, 0);
+    try {
+      fogCtx.clearRect(0, 0, W, H);
+          fogCtx.fillStyle = "rgba(0,0,0,.975)";
+          fogCtx.fillRect(0, 0, W, H);
+
+          if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) {
+            ctx.drawImage(fogCanvas, 0, 0);
+            return;
+          }
+
+          const points = buildVisibilityPolygon(self);
+          if (points.length < 3) { ctx.drawImage(fogCanvas, 0, 0); return; }
+          const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
+          fogCtx.save(); fogCtx.globalCompositeOperation = "destination-out";
+          fogCtx.beginPath(); fogCtx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i++) fogCtx.lineTo(points[i].x, points[i].y);
+          fogCtx.closePath(); fogCtx.clip();
+          const grad = fogCtx.createRadialGradient(self.x, self.y, Math.max(0, radius - 42), self.x, self.y, radius);
+          grad.addColorStop(0, "rgba(255,255,255,1)"); grad.addColorStop(.7, "rgba(255,255,255,.97)"); grad.addColorStop(1, "rgba(255,255,255,.15)");
+          fogCtx.fillStyle = grad; fogCtx.fillRect(self.x - radius, self.y - radius, radius * 2, radius * 2);
+          fogCtx.restore();
+          fogCtx.save(); fogCtx.globalCompositeOperation = "destination-out"; fogCtx.fillStyle = "#fff";
+          fogCtx.beginPath(); fogCtx.arc(self.x, self.y, 32, 0, Math.PI * 2); fogCtx.fill(); fogCtx.restore();
+          ctx.drawImage(fogCanvas, 0, 0);
+    } catch (error) {
+      reportRenderError(error, "fog");
+      drawEmergencyFog(self);
+    }
   }
+
   function drawHud(self) {
     ctx.save(); ctx.font = "700 14px system-ui"; ctx.textBaseline = "middle";
     const chips = [`HP ${Math.ceil(self.hp)}`, `KILLS ${self.kills}`, `GRENADES ${self.grenades}`];
@@ -665,34 +787,151 @@
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
+
     if (!maze.length || !state?.self) {
-      ctx.fillStyle = "#080a0f"; ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = "#303847"; ctx.font = "800 20px system-ui"; ctx.textAlign = "center";
+      ctx.fillStyle = "#080a0f";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#303847";
+      ctx.font = "800 20px system-ui";
+      ctx.textAlign = "center";
       ctx.fillText("MULTIPLAYER", W / 2, H / 2);
       return;
     }
+
+    // Maze is the base layer and should always render.
     drawMaze();
-    for (const p of state.pickups || []) drawPickup(p);
-    for (const b of state.bullets || []) { ctx.fillStyle = b.ownerId === myId ? "#f4f7fb" : "#ff7b7b"; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
-    for (const g of state.grenades || []) { ctx.fillStyle = "#ff9a4d"; ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill(); }
-    for (const p of renderPlayers.values()) drawTank(p, false);
-    const visualSelf = predictedSelf ? { ...state.self, ...predictedSelf } : state.self;
+
+    const visualSelf = localVisual
+      ? { ...state.self, ...localVisual, alive: state.self.alive !== false }
+      : state.self;
+
+    // World objects are isolated so one malformed object cannot kill the frame.
+    try {
+      for (const p of state.pickups || []) drawPickup(p);
+    } catch (error) {
+      reportRenderError(error, "pickups");
+    }
+
+    try {
+      for (const b of state.bullets || []) {
+        ctx.fillStyle = b.ownerId === myId ? "#f4f7fb" : "#ff7b7b";
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } catch (error) {
+      reportRenderError(error, "bullets");
+    }
+
+    try {
+      for (const g of state.grenades || []) {
+        ctx.fillStyle = "#ff9a4d";
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } catch (error) {
+      reportRenderError(error, "grenades");
+    }
+
+    try {
+      for (const p of renderPlayers.values()) drawTank(p, false);
+    } catch (error) {
+      reportRenderError(error, "remote players");
+    }
+
+    // Darkness is independently protected by drawFog's emergency fallback.
     drawFog(visualSelf);
-    for (const ping of state.pings || []) { ctx.strokeStyle = "#b6aaff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ping.x, ping.y, 18 + (1.5 - ping.left) * 16, 0, Math.PI * 2); ctx.stroke(); }
-    drawTank(visualSelf, true);
-    drawHud(state.self); drawFeed(state.feed);
-    if (!state.self.alive && roomState === "playing") { ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(0, 0, W, H); ctx.fillStyle = "#fff"; ctx.font = "900 26px system-ui"; ctx.textAlign = "center"; ctx.fillText("DESTROYED — WAITING FOR ROUND END", W / 2, 56); }
+
+    try {
+      for (const ping of state.pings || []) {
+        ctx.strokeStyle = "#b6aaff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(
+          ping.x,
+          ping.y,
+          18 + (1.5 - ping.left) * 16,
+          0,
+          Math.PI * 2
+        );
+        ctx.stroke();
+      }
+    } catch (error) {
+      reportRenderError(error, "radar");
+    }
+
+    // Draw the local tank AFTER fog so it is always readable.
+    try {
+      drawTank(visualSelf, true);
+    } catch (error) {
+      reportRenderError(error, "local tank");
+
+      // Minimal emergency tank, independent of the normal tank renderer.
+      if (
+        visualSelf &&
+        Number.isFinite(visualSelf.x) &&
+        Number.isFinite(visualSelf.y)
+      ) {
+        ctx.save();
+        ctx.translate(visualSelf.x, visualSelf.y);
+        ctx.fillStyle = "#52d681";
+        ctx.fillRect(-12, -10, 24, 20);
+        ctx.restore();
+      }
+    }
+
+    try {
+      drawHud(state.self);
+      drawFeed(state.feed);
+    } catch (error) {
+      reportRenderError(error, "hud");
+    }
+
+    if (!state.self.alive && roomState === "playing") {
+      ctx.fillStyle = "rgba(0,0,0,.25)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#fff";
+      ctx.font = "900 26px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("DESTROYED — WAITING FOR ROUND END", W / 2, 56);
+    }
   }
 
   function frame(now) {
+    // Schedule the next frame first. Even if any code below throws, the render
+    // loop continues instead of freezing forever on a partially drawn maze.
+    requestAnimationFrame(frame);
+
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
 
-    advanceLocalSimulation(dt);
-    updateRemoteRenderPlayers();
-    draw();
+    try {
+      updateLocalVisual(dt);
+    } catch (error) {
+      reportRenderError(error, "local movement");
+    }
 
-    requestAnimationFrame(frame);
+    try {
+      updateRemoteRenderPlayers();
+    } catch (error) {
+      reportRenderError(error, "remote interpolation");
+    }
+
+    try {
+      draw();
+    } catch (error) {
+      reportRenderError(error, "frame");
+
+      // Last-resort rendering path: dark background + local tank marker.
+      ctx.fillStyle = "#080a0f";
+      ctx.fillRect(0, 0, W, H);
+      if (localVisual) {
+        drawEmergencyFog(localVisual);
+        ctx.fillStyle = "#52d681";
+        ctx.fillRect(localVisual.x - 12, localVisual.y - 10, 24, 20);
+      }
+    }
   }
 
   function getMousePosition(event) {
@@ -700,21 +939,8 @@
     mouse.x = (event.clientX - rect.left) / rect.width * W;
     mouse.y = (event.clientY - rect.top) / rect.height * H;
   }
-  function flushInputBatch() {
-    if (roomState !== "playing" || socket?.readyState !== WebSocket.OPEN) return;
-    if (!unsentInputs.length) return;
-
-    // Normal case: two 60 Hz user commands in one 30 Hz WebSocket message.
-    const commands = unsentInputs.splice(0, 12);
-    safeSend({ type: "inputs", commands });
-  }
-
-  function queueInstantInput() {
-    // State transitions such as mouse-down can be acknowledged immediately
-    // without advancing movement time.
-    if (!predictedSelf || !state?.self?.alive) return;
-    queueInputCommand(0);
-    flushInputBatch();
+  function sendImmediateState(fireNow = false) {
+    sendClientState({ fireNow, force: true });
   }
 
   window.addEventListener("keydown", (e) => {
@@ -726,9 +952,12 @@
     if (k === "a" || k === "arrowleft") keys.left = true;
     if (k === "d" || k === "arrowright") keys.right = true;
     if (k === " ") keys.shooting = true;
-    if (k === "g" && !e.repeat) safeSend({ type: "grenade" });
+    if (k === "g" && !e.repeat) {
+      sendClientState({ force: true });
+      safeSend({ type: "grenade" });
+    }
     if (["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," ","g"].includes(k)) e.preventDefault();
-    queueInstantInput();
+    sendImmediateState(false);
   });
   window.addEventListener("keyup", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -738,7 +967,7 @@
     if (k === "a" || k === "arrowleft") keys.left = false;
     if (k === "d" || k === "arrowright") keys.right = false;
     if (k === " ") keys.shooting = false;
-    queueInstantInput();
+    sendImmediateState(false);
   });
   canvas.addEventListener("mousemove", (e) => {
     getMousePosition(e);
@@ -746,15 +975,22 @@
   canvas.addEventListener("mousedown", (e) => {
     getMousePosition(e);
     mouse.down = true;
-    queueInstantInput();
+    sendImmediateState(true);
   });
   window.addEventListener("mouseup", () => {
     mouse.down = false;
-    queueInstantInput();
+    sendImmediateState(false);
   });
 
-  // Fixed 60 Hz client commands are bundled into about 30 WebSocket messages/s.
-  setInterval(flushInputBatch, 1000 / 30);
+  // The visible tank runs at browser frame rate. About 30 times per second we
+  // replace the pending server transform with the newest local state. If the
+  // WebSocket is backed up, older unsent states are discarded.
+  setInterval(() => {
+    sendClientState();
+    flushLatestClientState();
+  }, 1000 / 30);
+
+  setInterval(flushLatestClientState, 16);
 
   setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
