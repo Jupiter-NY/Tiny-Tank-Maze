@@ -52,7 +52,23 @@
   let predictedSelf = null;
   let pingMs = null;
   let lastPingSentAt = 0;
-  let lastInputSentAt = 0;
+
+  // v5.2 local prediction / reconciliation.
+  const CLIENT_SIM_STEP = 1 / 60;
+  let simAccumulator = 0;
+  let nextInputSeq = 1;
+  let pendingInputs = [];
+  let unsentInputs = [];
+
+  // v5.2 remote snapshot interpolation.
+  const remoteHistories = new Map();
+  const MAX_EXTRAPOLATION_MS = 120;
+  let serverClockOffsetMs = 0;
+  let hasClockSync = false;
+  let jitterMs = 0;
+  let interpolationDelayMs = 100;
+  let previousSnapshotArrival = null;
+  let previousSnapshotServerTime = null;
 
   const keys = { up: false, down: false, left: false, right: false, shooting: false };
   const mouse = { x: W / 2, y: H / 2, down: false };
@@ -78,7 +94,7 @@
     if (socket?.readyState !== WebSocket.OPEN) return;
     connectionStatus.textContent = pingMs == null
       ? "Connected • measuring ping…"
-      : `Connected • ${Math.round(pingMs)} ms ping`;
+      : `Connected • ${Math.round(pingMs)} ms ping • ${Math.round(interpolationDelayMs)} ms smoothing`;
   }
 
   function connectThen(action) {
@@ -99,7 +115,7 @@
     socket.addEventListener("open", () => {
       pingMs = null;
       updateConnectionStatus();
-      lastPingSentAt = performance.now();
+      lastPingSentAt = Date.now();
       safeSend({ type: "ping", sentAt: lastPingSentAt });
       createBtn.disabled = false;
       joinBtn.disabled = false;
@@ -142,9 +158,20 @@
     }
     if (message.type === "pong") {
       const sentAt = Number(message.sentAt);
+      const serverAt = Number(message.serverAt);
       if (Number.isFinite(sentAt) && sentAt > 0) {
-        const sample = Math.max(0, performance.now() - sentAt);
+        const receivedAt = Date.now();
+        const sample = Math.max(0, receivedAt - sentAt);
         pingMs = pingMs == null ? sample : pingMs * 0.7 + sample * 0.3;
+
+        if (Number.isFinite(serverAt)) {
+          const offsetSample = serverAt + sample / 2 - receivedAt;
+          serverClockOffsetMs = hasClockSync
+            ? serverClockOffsetMs * 0.85 + offsetSample * 0.15
+            : offsetSample;
+          hasClockSync = true;
+        }
+
         updateConnectionStatus();
       }
       return;
@@ -180,8 +207,17 @@
       maze = message.maze || [];
       buildWalls();
       renderPlayers.clear();
+      remoteHistories.clear();
       predictedSelf = null;
       state = null;
+      simAccumulator = 0;
+      nextInputSeq = 1;
+      pendingInputs = [];
+      unsentInputs = [];
+      previousSnapshotArrival = null;
+      previousSnapshotServerTime = null;
+      jitterMs = 0;
+      interpolationDelayMs = 100;
       lobbyPanel.classList.add("hidden");
       roundPanel.classList.add("hidden");
       canvas.focus();
@@ -189,38 +225,19 @@
     }
     if (message.type === "state") {
       state = message;
-      updateRenderTargets((message.players || []).filter((p) => p.id !== myId));
-
-      const authoritative = message.self;
-      if (authoritative) {
-        if (!predictedSelf || !authoritative.alive) {
-          predictedSelf = {
-            x: authoritative.x,
-            y: authoritative.y,
-            bodyAngle: authoritative.bodyAngle,
-            turretAngle: authoritative.turretAngle,
-          };
-        } else {
-          const dx = authoritative.x - predictedSelf.x;
-          const dy = authoritative.y - predictedSelf.y;
-          const error = Math.hypot(dx, dy);
-
-          if (error > 70) {
-            predictedSelf.x = authoritative.x;
-            predictedSelf.y = authoritative.y;
-          } else if (!(keys.up || keys.down || keys.left || keys.right)) {
-            predictedSelf.x += dx * 0.35;
-            predictedSelf.y += dy * 0.35;
-          }
-        }
-      }
+      observeSnapshotTiming(message);
+      recordRemoteSnapshots(
+        (message.players || []).filter((p) => p.id !== myId),
+        Number(message.t) || Date.now()
+      );
+      reconcileLocalPlayer(message.self);
       return;
     }
     if (message.type === "round_end") {
       roomState = "ended";
       mouse.down = false;
       keys.shooting = false;
-      sendInput();
+      queueInstantInput();
       winnerTitle.textContent = message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
       const me = state?.self;
       winnerText.textContent = `Your kills: ${me?.kills || 0}. The host can start another match in the same room.`;
@@ -288,37 +305,114 @@
   function predictedCollidesWalls(x, y, radius = 14) {
     return wallRects.some((rect) => circleRectCollision(x, y, radius, rect));
   }
-  function updateLocalPrediction(dt) {
-    if (roomState !== "playing" || !state?.self?.alive) return;
-    if (!predictedSelf) {
-      predictedSelf = {
-        x: state.self.x, y: state.self.y,
-        bodyAngle: state.self.bodyAngle, turretAngle: state.self.turretAngle,
-      };
-    }
-
+  function simulateCommand(entity, command) {
+    const input = command.input;
     let dx = 0, dy = 0;
-    if (keys.up) dy -= 1;
-    if (keys.down) dy += 1;
-    if (keys.left) dx -= 1;
-    if (keys.right) dx += 1;
+
+    if (input.up) dy -= 1;
+    if (input.down) dy += 1;
+    if (input.left) dx -= 1;
+    if (input.right) dx += 1;
 
     if (dx || dy) {
       const len = Math.hypot(dx, dy);
-      dx /= len; dy /= len;
-      predictedSelf.bodyAngle = Math.atan2(dy, dx);
+      dx /= len;
+      dy /= len;
+      entity.bodyAngle = Math.atan2(dy, dx);
 
-      const speed = 165;
-      const nx = predictedSelf.x + dx * speed * dt;
-      if (!predictedCollidesWalls(nx, predictedSelf.y)) predictedSelf.x = nx;
-      const ny = predictedSelf.y + dy * speed * dt;
-      if (!predictedCollidesWalls(predictedSelf.x, ny)) predictedSelf.y = ny;
+      const nx = entity.x + dx * 165 * command.dt;
+      if (!predictedCollidesWalls(nx, entity.y)) entity.x = nx;
+
+      const ny = entity.y + dy * 165 * command.dt;
+      if (!predictedCollidesWalls(entity.x, ny)) entity.y = ny;
     }
 
-    predictedSelf.turretAngle = Math.atan2(
+    if (Number.isFinite(input.aim)) entity.turretAngle = input.aim;
+  }
+
+  function makeInputCommand(dt) {
+    if (roomState !== "playing" || !state?.self?.alive || !predictedSelf) return null;
+
+    const aim = Math.atan2(
       mouse.y - predictedSelf.y,
       mouse.x - predictedSelf.x
     );
+
+    return {
+      seq: nextInputSeq++,
+      dt,
+      input: {
+        ...keys,
+        shooting: mouse.down || keys.shooting,
+        aim,
+      },
+    };
+  }
+
+  function queueInputCommand(dt) {
+    const command = makeInputCommand(dt);
+    if (!command) return;
+
+    simulateCommand(predictedSelf, command);
+    pendingInputs.push(command);
+    unsentInputs.push(command);
+
+    // Four seconds of unacknowledged commands means the connection is badly
+    // stalled. Keep memory bounded; reconciliation will snap to the server.
+    if (pendingInputs.length > 240) pendingInputs = pendingInputs.slice(-240);
+    if (unsentInputs.length > 120) unsentInputs = unsentInputs.slice(-120);
+  }
+
+  function advanceLocalSimulation(dt) {
+    if (roomState !== "playing" || !state?.self?.alive) return;
+
+    if (!predictedSelf) {
+      predictedSelf = {
+        x: state.self.x,
+        y: state.self.y,
+        bodyAngle: state.self.bodyAngle,
+        turretAngle: state.self.turretAngle,
+      };
+    }
+
+    simAccumulator = Math.min(0.1, simAccumulator + dt);
+    while (simAccumulator >= CLIENT_SIM_STEP) {
+      queueInputCommand(CLIENT_SIM_STEP);
+      simAccumulator -= CLIENT_SIM_STEP;
+    }
+  }
+
+  function reconcileLocalPlayer(authoritative) {
+    if (!authoritative) return;
+
+    if (!authoritative.alive) {
+      pendingInputs = [];
+      unsentInputs = [];
+      predictedSelf = {
+        x: authoritative.x,
+        y: authoritative.y,
+        bodyAngle: authoritative.bodyAngle,
+        turretAngle: authoritative.turretAngle,
+      };
+      return;
+    }
+
+    const ack = Number(authoritative.lastProcessedInputSeq) || 0;
+    pendingInputs = pendingInputs.filter((command) => command.seq > ack);
+    unsentInputs = unsentInputs.filter((command) => command.seq > ack);
+
+    // Rewind to the server's authoritative transform...
+    predictedSelf = {
+      x: authoritative.x,
+      y: authoritative.y,
+      bodyAngle: authoritative.bodyAngle,
+      turretAngle: authoritative.turretAngle,
+    };
+
+    // ...then replay every local command the server has not acknowledged yet.
+    for (const command of pendingInputs) {
+      simulateCommand(predictedSelf, command);
+    }
   }
 
   function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
@@ -359,26 +453,141 @@
     });
   }
 
-  function updateRenderTargets(players) {
-    const present = new Set();
-    for (const p of players) {
-      present.add(p.id);
-      const old = renderPlayers.get(p.id);
-      if (!old) renderPlayers.set(p.id, { ...p, tx: p.x, ty: p.y, tbody: p.bodyAngle, tturret: p.turretAngle });
-      else Object.assign(old, { ...p, tx: p.x, ty: p.y, tbody: p.bodyAngle, tturret: p.turretAngle });
-    }
-    for (const id of [...renderPlayers.keys()]) if (!present.has(id)) renderPlayers.delete(id);
-  }
   function lerpAngle(a, b, t) {
     const d = Math.atan2(Math.sin(b - a), Math.cos(b - a));
     return a + d * t;
   }
-  function smoothEntities(dt) {
-    const t = 1 - Math.pow(0.001, dt);
-    for (const p of renderPlayers.values()) {
-      p.x += (p.tx - p.x) * t; p.y += (p.ty - p.y) * t;
-      p.bodyAngle = lerpAngle(p.bodyAngle, p.tbody, t);
-      p.turretAngle = lerpAngle(p.turretAngle, p.tturret, t);
+
+  function observeSnapshotTiming(snapshot) {
+    const serverTime = Number(snapshot?.t);
+    if (!Number.isFinite(serverTime)) return;
+
+    const arrival = performance.now();
+
+    if (previousSnapshotArrival !== null && previousSnapshotServerTime !== null) {
+      const arrivalDelta = arrival - previousSnapshotArrival;
+      const serverDelta = serverTime - previousSnapshotServerTime;
+      const sampleJitter = Math.abs(arrivalDelta - serverDelta);
+      jitterMs = jitterMs * 0.85 + sampleJitter * 0.15;
+
+      // Two snapshot intervals (100 ms at 20 Hz) is the normal buffer.
+      // Increase it only when packet arrival becomes irregular.
+      interpolationDelayMs = clamp(100 + jitterMs * 2.0, 100, 180);
+    }
+
+    previousSnapshotArrival = arrival;
+    previousSnapshotServerTime = serverTime;
+
+    // Snapshot arrival itself provides a fallback clock estimate before the
+    // first ping/pong clock synchronization sample is available.
+    if (!hasClockSync) {
+      const offsetSample = serverTime - Date.now();
+      serverClockOffsetMs =
+        previousSnapshotServerTime === null
+          ? offsetSample
+          : serverClockOffsetMs * 0.9 + offsetSample * 0.1;
+    }
+  }
+
+  function recordRemoteSnapshots(players, serverTime) {
+    const visible = new Set();
+
+    for (const player of players) {
+      visible.add(player.id);
+
+      let history = remoteHistories.get(player.id);
+      if (!history) {
+        history = { samples: [] };
+        remoteHistories.set(player.id, history);
+      }
+
+      const samples = history.samples;
+      const last = samples[samples.length - 1];
+
+      if (!last || serverTime > last.t) {
+        samples.push({ ...player, t: serverTime });
+      } else if (serverTime === last.t) {
+        samples[samples.length - 1] = { ...player, t: serverTime };
+      }
+
+      while (samples.length > 30 || (samples.length > 2 && serverTime - samples[0].t > 1500)) {
+        samples.shift();
+      }
+    }
+
+    // IMPORTANT: a missing player means the server's flashlight/LOS filter
+    // says we may no longer know their position. Delete history immediately;
+    // never extrapolate a hidden opponent through a wall.
+    for (const id of [...remoteHistories.keys()]) {
+      if (!visible.has(id)) {
+        remoteHistories.delete(id);
+        renderPlayers.delete(id);
+      }
+    }
+  }
+
+  function interpolatePlayer(a, b, amount) {
+    return {
+      ...b,
+      x: a.x + (b.x - a.x) * amount,
+      y: a.y + (b.y - a.y) * amount,
+      bodyAngle: lerpAngle(a.bodyAngle, b.bodyAngle, amount),
+      turretAngle: lerpAngle(a.turretAngle, b.turretAngle, amount),
+    };
+  }
+
+  function extrapolateRemotePlayer(previous, latest, extraMs) {
+    const sampleDt = Math.max(1, latest.t - previous.t) / 1000;
+    const vx = (latest.x - previous.x) / sampleDt;
+    const vy = (latest.y - previous.y) / sampleDt;
+    const extra = clamp(extraMs, 0, MAX_EXTRAPOLATION_MS) / 1000;
+
+    const result = { ...latest };
+    const nx = result.x + vx * extra;
+    if (!predictedCollidesWalls(nx, result.y)) result.x = nx;
+
+    const ny = result.y + vy * extra;
+    if (!predictedCollidesWalls(result.x, ny)) result.y = ny;
+
+    return result;
+  }
+
+  function sampleRemotePlayer(history, renderServerTime) {
+    const samples = history.samples;
+    if (!samples.length) return null;
+    if (samples.length === 1) return { ...samples[0] };
+
+    if (renderServerTime <= samples[0].t) {
+      return { ...samples[0] };
+    }
+
+    for (let i = 0; i < samples.length - 1; i++) {
+      const a = samples[i];
+      const b = samples[i + 1];
+
+      if (renderServerTime >= a.t && renderServerTime <= b.t) {
+        const span = Math.max(1, b.t - a.t);
+        const amount = clamp((renderServerTime - a.t) / span, 0, 1);
+        return interpolatePlayer(a, b, amount);
+      }
+    }
+
+    const latest = samples[samples.length - 1];
+    const previous = samples[samples.length - 2];
+    return extrapolateRemotePlayer(previous, latest, renderServerTime - latest.t);
+  }
+
+  function updateRemoteRenderPlayers() {
+    const estimatedServerNow = Date.now() + serverClockOffsetMs;
+    const renderServerTime = estimatedServerNow - interpolationDelayMs;
+
+    for (const [id, history] of remoteHistories) {
+      const sampled = sampleRemotePlayer(history, renderServerTime);
+      if (sampled) renderPlayers.set(id, sampled);
+    }
+
+    for (const id of [...renderPlayers.keys()]) {
+      if (!remoteHistories.has(id)) renderPlayers.delete(id);
     }
   }
 
@@ -476,10 +685,13 @@
   }
 
   function frame(now) {
-    const dt = Math.min(0.05, (now - lastFrame) / 1000); lastFrame = now;
-    updateLocalPrediction(dt);
-    smoothEntities(dt);
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+
+    advanceLocalSimulation(dt);
+    updateRemoteRenderPlayers();
     draw();
+
     requestAnimationFrame(frame);
   }
 
@@ -488,18 +700,21 @@
     mouse.x = (event.clientX - rect.left) / rect.width * W;
     mouse.y = (event.clientY - rect.top) / rect.height * H;
   }
-  function sendInput(force = false) {
-    if (roomState !== "playing" || !state?.self) return;
-    const now = performance.now();
-    if (!force && now - lastInputSentAt < 32) return;
-    lastInputSentAt = now;
+  function flushInputBatch() {
+    if (roomState !== "playing" || socket?.readyState !== WebSocket.OPEN) return;
+    if (!unsentInputs.length) return;
 
-    const self = predictedSelf || state.self;
-    const aim = Math.atan2(mouse.y - self.y, mouse.x - self.x);
-    safeSend({
-      type: "input",
-      input: { ...keys, shooting: mouse.down || keys.shooting, aim }
-    });
+    // Normal case: two 60 Hz user commands in one 30 Hz WebSocket message.
+    const commands = unsentInputs.splice(0, 12);
+    safeSend({ type: "inputs", commands });
+  }
+
+  function queueInstantInput() {
+    // State transitions such as mouse-down can be acknowledged immediately
+    // without advancing movement time.
+    if (!predictedSelf || !state?.self?.alive) return;
+    queueInputCommand(0);
+    flushInputBatch();
   }
 
   window.addEventListener("keydown", (e) => {
@@ -513,7 +728,7 @@
     if (k === " ") keys.shooting = true;
     if (k === "g" && !e.repeat) safeSend({ type: "grenade" });
     if (["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," ","g"].includes(k)) e.preventDefault();
-    sendInput(true);
+    queueInstantInput();
   });
   window.addEventListener("keyup", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -523,7 +738,7 @@
     if (k === "a" || k === "arrowleft") keys.left = false;
     if (k === "d" || k === "arrowright") keys.right = false;
     if (k === " ") keys.shooting = false;
-    sendInput(true);
+    queueInstantInput();
   });
   canvas.addEventListener("mousemove", (e) => {
     getMousePosition(e);
@@ -531,18 +746,19 @@
   canvas.addEventListener("mousedown", (e) => {
     getMousePosition(e);
     mouse.down = true;
-    sendInput(true);
+    queueInstantInput();
   });
   window.addEventListener("mouseup", () => {
     mouse.down = false;
-    sendInput(true);
+    queueInstantInput();
   });
 
-  setInterval(() => sendInput(false), 1000 / 30);
+  // Fixed 60 Hz client commands are bundled into about 30 WebSocket messages/s.
+  setInterval(flushInputBatch, 1000 / 30);
 
   setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
-    lastPingSentAt = performance.now();
+    lastPingSentAt = Date.now();
     safeSend({ type: "ping", sentAt: lastPingSentAt });
   }, 2000);
 
