@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tiny Tank Maze — Multiplayer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="game-body">
+  <div class="wrap">
+    <div class="topbar game-topbar">
+      <div>
+        <div class="game-title-line">
+          <h1>Tiny Tank Maze</h1>
+          <span class="mode-badge">MULTIPLAYER</span>
+        </div>
+        <p id="mpConnectionStatus">Room-code free-for-all • 2–8 players</p>
+      </div>
+      <div class="top-actions">
+        <div class="controls">
+          <span><b>Move</b> WASD</span>
+          <span><b>Aim</b> Mouse</span>
+          <span><b>Shoot</b> Click / Space</span>
+          <span><b>Grenade</b> G</span>
+        </div>
+        <a class="home-link" href="index.html">HOME</a>
+      </div>
+    </div>
+
+    <div class="game-shell">
+      <canvas id="mpGame" width="1152" height="768" tabindex="0"></canvas>
+
+      <section id="joinPanel" class="panel">
+        <div class="mp-dialog">
+          <div class="eyebrow">ONLINE MULTIPLAYER</div>
+          <h2>Enter the maze together</h2>
+          <p id="serverHint">Create a private room, or enter a friend's room code.</p>
+
+          <label class="mp-label" for="mpName">Player name</label>
+          <input id="mpName" class="mp-input" maxlength="16" autocomplete="nickname" placeholder="Name" />
+
+          <div class="mp-join-grid">
+            <button id="createRoomBtn" class="primary-btn">CREATE ROOM</button>
+            <div class="mp-code-row">
+              <input id="roomCodeInput" class="mp-input room-code-input" maxlength="6" autocomplete="off" placeholder="ROOM CODE" />
+              <button id="joinRoomBtn" class="secondary-btn">JOIN</button>
+            </div>
+          </div>
+          <div id="mpError" class="name-error" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section id="lobbyPanel" class="panel hidden">
+        <div class="mp-dialog">
+          <div class="eyebrow">PRIVATE ROOM</div>
+          <div class="mp-room-heading">
+            <div>
+              <h2>Room <span id="roomCodeLabel">-----</span></h2>
+              <p>Share this code with another player.</p>
+            </div>
+          </div>
+          <div id="lobbyPlayers" class="mp-player-list"></div>
+          <div class="result-actions">
+            <button id="readyBtn" class="secondary-btn">READY</button>
+            <button id="startMatchBtn" class="primary-btn hidden">START MATCH</button>
+            <button id="leaveRoomBtn" class="secondary-btn">LEAVE</button>
+          </div>
+          <div id="lobbyMessage" class="mp-small-note">At least 2 players are required.</div>
+        </div>
+      </section>
+
+      <section id="roundPanel" class="panel hidden">
+        <div class="result-card">
+          <div class="eyebrow">MATCH OVER</div>
+          <h2 id="winnerTitle">Winner</h2>
+          <p id="winnerText"></p>
+          <div class="result-actions">
+            <button id="playAgainBtn" class="primary-btn hidden">PLAY AGAIN</button>
+            <button id="backLobbyBtn" class="secondary-btn">LOBBY</button>
+            <a href="index.html" class="secondary-btn button-link">HOME</a>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="legend">
+      <span>Green = you</span>
+      <span>Red = opponents</span>
+      <span>Blue = vision</span>
+      <span>Yellow = rapid fire</span>
+      <span>Pink = repair</span>
+      <span>Orange G = grenades</span>
+      <span>Purple P = enemy ping</span>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="multiplayer.js"></script>
+</body>
+</html>
