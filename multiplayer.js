@@ -49,18 +49,15 @@
   let lastFrame = performance.now();
   let ready = false;
   let connectingAction = null;
-  let predictedSelf = null;
   let pingMs = null;
   let lastPingSentAt = 0;
 
-  // v5.2 local prediction / reconciliation.
-  const CLIENT_SIM_STEP = 1 / 60;
-  let simAccumulator = 0;
-  let nextInputSeq = 1;
-  let pendingInputs = [];
-  let unsentInputs = [];
+  // v5.3: localVisual is the tank this player actually sees. It is never
+  // reconciled or snapped to server snapshots while alive.
+  let localVisual = null;
+  let lastClientStateSentAt = 0;
 
-  // v5.2 remote snapshot interpolation.
+  // Remote players still render the server hitbox/state through a jitter buffer.
   const remoteHistories = new Map();
   const MAX_EXTRAPOLATION_MS = 120;
   let serverClockOffsetMs = 0;
@@ -208,12 +205,9 @@
       buildWalls();
       renderPlayers.clear();
       remoteHistories.clear();
-      predictedSelf = null;
+      localVisual = null;
       state = null;
-      simAccumulator = 0;
-      nextInputSeq = 1;
-      pendingInputs = [];
-      unsentInputs = [];
+      lastClientStateSentAt = 0;
       previousSnapshotArrival = null;
       previousSnapshotServerTime = null;
       jitterMs = 0;
@@ -230,14 +224,33 @@
         (message.players || []).filter((p) => p.id !== myId),
         Number(message.t) || Date.now()
       );
-      reconcileLocalPlayer(message.self);
+
+      if (!localVisual && message.self) {
+        localVisual = {
+          x: message.self.x,
+          y: message.self.y,
+          bodyAngle: message.self.bodyAngle,
+          turretAngle: message.self.turretAngle,
+        };
+      }
+
+      // Death is the one time the local visual is allowed to snap back to the
+      // server, because the tank is no longer under local control.
+      if (message.self && !message.self.alive) {
+        localVisual = {
+          x: message.self.x,
+          y: message.self.y,
+          bodyAngle: message.self.bodyAngle,
+          turretAngle: message.self.turretAngle,
+        };
+      }
       return;
     }
     if (message.type === "round_end") {
       roomState = "ended";
       mouse.down = false;
       keys.shooting = false;
-      queueInstantInput();
+      sendClientState({ force: true });
       winnerTitle.textContent = message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
       const me = state?.self;
       winnerText.textContent = `Your kills: ${me?.kills || 0}. The host can start another match in the same room.`;
@@ -305,69 +318,11 @@
   function predictedCollidesWalls(x, y, radius = 14) {
     return wallRects.some((rect) => circleRectCollision(x, y, radius, rect));
   }
-  function simulateCommand(entity, command) {
-    const input = command.input;
-    let dx = 0, dy = 0;
-
-    if (input.up) dy -= 1;
-    if (input.down) dy += 1;
-    if (input.left) dx -= 1;
-    if (input.right) dx += 1;
-
-    if (dx || dy) {
-      const len = Math.hypot(dx, dy);
-      dx /= len;
-      dy /= len;
-      entity.bodyAngle = Math.atan2(dy, dx);
-
-      const nx = entity.x + dx * 165 * command.dt;
-      if (!predictedCollidesWalls(nx, entity.y)) entity.x = nx;
-
-      const ny = entity.y + dy * 165 * command.dt;
-      if (!predictedCollidesWalls(entity.x, ny)) entity.y = ny;
-    }
-
-    if (Number.isFinite(input.aim)) entity.turretAngle = input.aim;
-  }
-
-  function makeInputCommand(dt) {
-    if (roomState !== "playing" || !state?.self?.alive || !predictedSelf) return null;
-
-    const aim = Math.atan2(
-      mouse.y - predictedSelf.y,
-      mouse.x - predictedSelf.x
-    );
-
-    return {
-      seq: nextInputSeq++,
-      dt,
-      input: {
-        ...keys,
-        shooting: mouse.down || keys.shooting,
-        aim,
-      },
-    };
-  }
-
-  function queueInputCommand(dt) {
-    const command = makeInputCommand(dt);
-    if (!command) return;
-
-    simulateCommand(predictedSelf, command);
-    pendingInputs.push(command);
-    unsentInputs.push(command);
-
-    // Four seconds of unacknowledged commands means the connection is badly
-    // stalled. Keep memory bounded; reconciliation will snap to the server.
-    if (pendingInputs.length > 240) pendingInputs = pendingInputs.slice(-240);
-    if (unsentInputs.length > 120) unsentInputs = unsentInputs.slice(-120);
-  }
-
-  function advanceLocalSimulation(dt) {
+  function updateLocalVisual(dt) {
     if (roomState !== "playing" || !state?.self?.alive) return;
 
-    if (!predictedSelf) {
-      predictedSelf = {
+    if (!localVisual) {
+      localVisual = {
         x: state.self.x,
         y: state.self.y,
         bodyAngle: state.self.bodyAngle,
@@ -375,81 +330,53 @@
       };
     }
 
-    simAccumulator = Math.min(0.1, simAccumulator + dt);
-    while (simAccumulator >= CLIENT_SIM_STEP) {
-      queueInputCommand(CLIENT_SIM_STEP);
-      simAccumulator -= CLIENT_SIM_STEP;
+    let dx = 0, dy = 0;
+    if (keys.up) dy -= 1;
+    if (keys.down) dy += 1;
+    if (keys.left) dx -= 1;
+    if (keys.right) dx += 1;
+
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy);
+      dx /= len;
+      dy /= len;
+      localVisual.bodyAngle = Math.atan2(dy, dx);
+
+      const nx = localVisual.x + dx * 165 * dt;
+      if (!predictedCollidesWalls(nx, localVisual.y)) localVisual.x = nx;
+
+      const ny = localVisual.y + dy * 165 * dt;
+      if (!predictedCollidesWalls(localVisual.x, ny)) localVisual.y = ny;
     }
+
+    localVisual.turretAngle = Math.atan2(
+      mouse.y - localVisual.y,
+      mouse.x - localVisual.x
+    );
   }
 
-  function reconcileLocalPlayer(authoritative) {
-    if (!authoritative) return;
+  function sendClientState({ fireNow = false, force = false } = {}) {
+    if (
+      roomState !== "playing" ||
+      socket?.readyState !== WebSocket.OPEN ||
+      !state?.self?.alive ||
+      !localVisual
+    ) return;
 
-    if (!authoritative.alive) {
-      pendingInputs = [];
-      unsentInputs = [];
-      predictedSelf = {
-        x: authoritative.x,
-        y: authoritative.y,
-        bodyAngle: authoritative.bodyAngle,
-        turretAngle: authoritative.turretAngle,
-      };
-      return;
-    }
+    const now = performance.now();
+    if (!force && now - lastClientStateSentAt < 48) return;
+    lastClientStateSentAt = now;
 
-    const ack = Number(authoritative.lastProcessedInputSeq) || 0;
-    pendingInputs = pendingInputs.filter((command) => command.seq > ack);
-    unsentInputs = unsentInputs.filter((command) => command.seq > ack);
-
-    // Rewind to the server's authoritative transform...
-    predictedSelf = {
-      x: authoritative.x,
-      y: authoritative.y,
-      bodyAngle: authoritative.bodyAngle,
-      turretAngle: authoritative.turretAngle,
-    };
-
-    // ...then replay every local command the server has not acknowledged yet.
-    for (const command of pendingInputs) {
-      simulateCommand(predictedSelf, command);
-    }
-  }
-
-  function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
-    const sx = x2 - x1, sy = y2 - y1, denom = dx * sy - dy * sx;
-    if (Math.abs(denom) < 1e-8) return null;
-    const qpx = x1 - px, qpy = y1 - py;
-    const t = (qpx * sy - qpy * sx) / denom;
-    const u = (qpx * dy - qpy * dx) / denom;
-    return t >= 0 && u >= 0 && u <= 1 ? t : null;
-  }
-  function raycastDistance(x, y, angle, maxDistance) {
-    const dx = Math.cos(angle), dy = Math.sin(angle); let best = maxDistance;
-    for (const s of wallSegments) {
-      const t = raySegmentIntersection(x, y, dx, dy, s[0], s[1], s[2], s[3]);
-      if (t !== null && t < best) best = t;
-    }
-    return Math.max(0, best - 0.8);
-  }
-  function buildVisibilityPolygon(self) {
-    const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
-    const angles = [];
-    const rays = 220;
-    for (let i = 0; i < rays; i++) angles.push((i / rays) * Math.PI * 2);
-    const eps = 0.00018, r2 = (radius + 80) ** 2;
-    for (const s of wallSegments) {
-      for (const point of [[s[0], s[1]], [s[2], s[3]]]) {
-        const dx = point[0] - self.x, dy = point[1] - self.y;
-        if (dx * dx + dy * dy > r2) continue;
-        let a = Math.atan2(dy, dx);
-        if (a < 0) a += Math.PI * 2;
-        angles.push((a - eps + Math.PI * 2) % (Math.PI * 2), a, (a + eps) % (Math.PI * 2));
-      }
-    }
-    angles.sort((a, b) => a - b);
-    return angles.map((a) => {
-      const d = raycastDistance(self.x, self.y, a, radius);
-      return { x: self.x + Math.cos(a) * d, y: self.y + Math.sin(a) * d };
+    safeSend({
+      type: "client_state",
+      state: {
+        x: localVisual.x,
+        y: localVisual.y,
+        bodyAngle: localVisual.bodyAngle,
+        turretAngle: localVisual.turretAngle,
+        shooting: mouse.down || keys.shooting,
+        fireNow,
+      },
     });
   }
 
@@ -676,7 +603,7 @@
     for (const b of state.bullets || []) { ctx.fillStyle = b.ownerId === myId ? "#f4f7fb" : "#ff7b7b"; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
     for (const g of state.grenades || []) { ctx.fillStyle = "#ff9a4d"; ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill(); }
     for (const p of renderPlayers.values()) drawTank(p, false);
-    const visualSelf = predictedSelf ? { ...state.self, ...predictedSelf } : state.self;
+    const visualSelf = localVisual ? { ...state.self, ...localVisual } : state.self;
     drawFog(visualSelf);
     for (const ping of state.pings || []) { ctx.strokeStyle = "#b6aaff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ping.x, ping.y, 18 + (1.5 - ping.left) * 16, 0, Math.PI * 2); ctx.stroke(); }
     drawTank(visualSelf, true);
@@ -688,7 +615,7 @@
     const dt = Math.min(0.05, (now - lastFrame) / 1000);
     lastFrame = now;
 
-    advanceLocalSimulation(dt);
+    updateLocalVisual(dt);
     updateRemoteRenderPlayers();
     draw();
 
@@ -700,21 +627,8 @@
     mouse.x = (event.clientX - rect.left) / rect.width * W;
     mouse.y = (event.clientY - rect.top) / rect.height * H;
   }
-  function flushInputBatch() {
-    if (roomState !== "playing" || socket?.readyState !== WebSocket.OPEN) return;
-    if (!unsentInputs.length) return;
-
-    // Normal case: two 60 Hz user commands in one 30 Hz WebSocket message.
-    const commands = unsentInputs.splice(0, 12);
-    safeSend({ type: "inputs", commands });
-  }
-
-  function queueInstantInput() {
-    // State transitions such as mouse-down can be acknowledged immediately
-    // without advancing movement time.
-    if (!predictedSelf || !state?.self?.alive) return;
-    queueInputCommand(0);
-    flushInputBatch();
+  function sendImmediateState(fireNow = false) {
+    sendClientState({ fireNow, force: true });
   }
 
   window.addEventListener("keydown", (e) => {
@@ -726,9 +640,12 @@
     if (k === "a" || k === "arrowleft") keys.left = true;
     if (k === "d" || k === "arrowright") keys.right = true;
     if (k === " ") keys.shooting = true;
-    if (k === "g" && !e.repeat) safeSend({ type: "grenade" });
+    if (k === "g" && !e.repeat) {
+      sendClientState({ force: true });
+      safeSend({ type: "grenade" });
+    }
     if (["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," ","g"].includes(k)) e.preventDefault();
-    queueInstantInput();
+    sendImmediateState(false);
   });
   window.addEventListener("keyup", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -738,7 +655,7 @@
     if (k === "a" || k === "arrowleft") keys.left = false;
     if (k === "d" || k === "arrowright") keys.right = false;
     if (k === " ") keys.shooting = false;
-    queueInstantInput();
+    sendImmediateState(false);
   });
   canvas.addEventListener("mousemove", (e) => {
     getMousePosition(e);
@@ -746,15 +663,16 @@
   canvas.addEventListener("mousedown", (e) => {
     getMousePosition(e);
     mouse.down = true;
-    queueInstantInput();
+    sendImmediateState(true);
   });
   window.addEventListener("mouseup", () => {
     mouse.down = false;
-    queueInstantInput();
+    sendImmediateState(false);
   });
 
-  // Fixed 60 Hz client commands are bundled into about 30 WebSocket messages/s.
-  setInterval(flushInputBatch, 1000 / 30);
+  // The visible tank runs at browser frame rate. The server hitbox receives
+  // transform updates at only ~20 Hz and may stay stationary during packet loss.
+  setInterval(() => sendClientState(), 50);
 
   setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
