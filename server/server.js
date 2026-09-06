@@ -253,10 +253,13 @@ function makePlayer(ws, name) {
     hp: 100, maxHp: 100, alive: true, grenades: 3, kills: 0,
     fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
 
-    // v5.3: the browser owns the smooth visual transform. The server keeps a
-    // separate hitbox transform and updates it when client-state packets arrive.
+    // v5.2 networking: the browser sends fixed-timestep user commands.
+    // The server processes them authoritatively and acknowledges the last seq.
     input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
-    lastClientStateAt: nowSeconds(),
+    inputQueue: [],
+    lastQueuedInputSeq: 0,
+    lastProcessedInputSeq: 0,
+    inputBudget: 0.05,
   };
 }
 function publicLobbyPlayers(room) {
@@ -332,7 +335,10 @@ function resetRoomForGame(room) {
       hp: 100, maxHp: 100, alive: true, grenades: 3, kills: 0,
       fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
       input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
-      lastClientStateAt: nowSeconds(),
+      inputQueue: [],
+      lastQueuedInputSeq: 0,
+      lastProcessedInputSeq: 0,
+      inputBudget: 0.05,
     });
   }
   spawnPickup(room, "grenade");
@@ -379,6 +385,7 @@ function damagePlayer(room, target, amount, attackerId) {
   target.hp = 0;
   target.alive = false;
   target.input.shooting = false;
+  target.inputQueue = [];
   const attacker = room.players.get(attackerId);
   if (attacker && attacker.id !== target.id) attacker.kills++;
   room.feed.push({ text: `${attacker?.name || "Explosion"} eliminated ${target.name}`, at: Date.now() });
@@ -422,52 +429,34 @@ function checkRoundEnd(room) {
   sendRoomUpdate(room);
 }
 
-function pathClearForCircle(room, x1, y1, x2, y2, radius = PLAYER_RADIUS) {
-  const distance = Math.hypot(x2 - x1, y2 - y1);
-  const steps = Math.max(1, Math.ceil(distance / 4));
+function processPlayerCommand(room, player, command) {
+  const input = command.input || {};
+  player.input = input;
 
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const x = x1 + (x2 - x1) * t;
-    const y = y1 + (y2 - y1) * t;
-    if (collidesWalls(room, x, y, radius)) return false;
+  let dx = 0, dy = 0;
+  if (input.up) dy -= 1;
+  if (input.down) dy += 1;
+  if (input.left) dx -= 1;
+  if (input.right) dx += 1;
+
+  if (dx || dy) {
+    const len = Math.hypot(dx, dy);
+    dx /= len;
+    dy /= len;
+    player.bodyAngle = Math.atan2(dy, dx);
+    moveCircle(
+      room,
+      player,
+      dx * 165 * command.dt,
+      dy * 165 * command.dt,
+      PLAYER_RADIUS
+    );
   }
 
-  return true;
-}
+  if (Number.isFinite(input.aim)) player.turretAngle = input.aim;
+  if (input.shooting) shoot(room, player);
 
-function applyClientTransform(room, player, state) {
-  if (!player.alive) return false;
-
-  const x = Number(state?.x);
-  const y = Number(state?.y);
-  const bodyAngle = Number(state?.bodyAngle);
-  const turretAngle = Number(state?.turretAngle);
-
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-
-  const now = nowSeconds();
-  const elapsed = clamp(now - (player.lastClientStateAt || now), 0.001, 2.0);
-
-  // Client movement is trusted for responsiveness, but reject impossible
-  // teleports and paths that cross maze walls.
-  const maxDistance = 165 * elapsed + 24;
-  const distance = Math.hypot(x - player.x, y - player.y);
-
-  if (distance > maxDistance) return false;
-  if (!pathClearForCircle(room, player.x, player.y, x, y, PLAYER_RADIUS)) return false;
-
-  player.x = x;
-  player.y = y;
-  player.lastClientStateAt = now;
-
-  if (Number.isFinite(bodyAngle)) player.bodyAngle = bodyAngle;
-  if (Number.isFinite(turretAngle)) {
-    player.turretAngle = turretAngle;
-    player.input.aim = turretAngle;
-  }
-
-  return true;
+  player.lastProcessedInputSeq = command.seq;
 }
 
 function updateRoom(room, dt) {
@@ -476,11 +465,28 @@ function updateRoom(room, dt) {
   for (const p of room.players.values()) {
     p.fireCooldown = Math.max(0, p.fireCooldown - dt);
     p.pingMarkers = p.pingMarkers.filter((m) => m.expiresAt > now);
-    if (!p.alive) continue;
+    if (!p.alive) {
+      p.inputQueue = [];
+      continue;
+    }
 
-    // v5.3 does not simulate keyboard movement here. The server hitbox remains
-    // at its last accepted client transform until another packet arrives.
-    if (p.input.shooting) shoot(room, p);
+    // Commands normally arrive at 60 Hz in 2-command batches. The budget is
+    // replenished using real server time, preventing a client from gaining
+    // speed by submitting excessive simulated time. A small burst reserve
+    // allows short network stalls to catch up without permanent rubber-banding.
+    p.inputBudget = Math.min(0.12, p.inputBudget + dt);
+    let processedThisTick = 0;
+
+    while (p.inputQueue.length && processedThisTick < 12) {
+      const command = p.inputQueue[0];
+
+      if (command.dt > p.inputBudget + 1e-6) break;
+
+      p.inputQueue.shift();
+      p.inputBudget = Math.max(0, p.inputBudget - command.dt);
+      processPlayerCommand(room, p, command);
+      processedThisTick++;
+    }
 
     for (let i = room.pickups.length - 1; i >= 0; i--) {
       const pickup = room.pickups[i];
@@ -555,6 +561,7 @@ function stateForViewer(room, viewer) {
       id: viewer.id, x: viewer.x, y: viewer.y, bodyAngle: viewer.bodyAngle,
       turretAngle: viewer.turretAngle, hp: viewer.hp, maxHp: viewer.maxHp,
       alive: viewer.alive, grenades: viewer.grenades, kills: viewer.kills,
+      lastProcessedInputSeq: viewer.lastProcessedInputSeq,
       rapidLeft: Math.max(0, viewer.rapidUntil - nowSeconds()),
       visionLeft: Math.max(0, viewer.visionUntil - nowSeconds()),
     },
@@ -610,36 +617,59 @@ function handleMessage(player, message) {
     if (room.players.size < MIN_PLAYERS_TO_START) return safeSend(player.ws, { type: "error", message: "At least 2 players are required." });
     resetRoomForGame(room); sendRoomUpdate(room); return;
   }
-  if (type === "client_state" && room.state === "playing") {
-    const state = message.state || {};
-    const accepted = applyClientTransform(room, player, state);
+  if (type === "inputs" && room.state === "playing") {
+    const commands = Array.isArray(message.commands)
+      ? message.commands.slice(0, 12)
+      : [];
 
-    if (accepted) {
-      player.input.shooting = Boolean(state.shooting);
+    for (const raw of commands) {
+      const seq = Number(raw?.seq);
+      const rawDt = Number(raw?.dt);
+      const input = raw?.input || {};
 
-      const aim = Number(state.turretAngle);
-      if (Number.isFinite(aim)) {
-        player.input.aim = aim;
-        player.turretAngle = aim;
-      }
+      if (!Number.isSafeInteger(seq) || seq <= player.lastQueuedInputSeq) continue;
+      if (!Number.isFinite(rawDt) || rawDt < 0 || rawDt > 0.04) continue;
 
-      // A mouse-down packet can request an immediate authoritative shot after
-      // the newest transform is accepted.
-      if (state.fireNow) shoot(room, player);
+      // Do not allow an unbounded client backlog to consume server memory.
+      if (player.inputQueue.length >= 180) break;
+
+      const aim = Number(input.aim);
+      const command = {
+        seq,
+        dt: clamp(rawDt, 0, 1 / 30),
+        input: {
+          up: Boolean(input.up),
+          down: Boolean(input.down),
+          left: Boolean(input.left),
+          right: Boolean(input.right),
+          shooting: Boolean(input.shooting),
+          aim: Number.isFinite(aim) ? aim : player.turretAngle,
+        },
+      };
+
+      player.inputQueue.push(command);
+      player.lastQueuedInputSeq = seq;
     }
     return;
   }
 
-  // Compatibility with older clients during a rolling deploy. Movement from
-  // these packets is ignored.
+  // Temporary compatibility with the v5/v5.1 client during a rolling deploy.
   if (type === "input" && room.state === "playing") {
     const input = message.input || {};
-    player.input.shooting = Boolean(input.shooting);
-    const aim = Number(input.aim);
-    if (Number.isFinite(aim)) {
-      player.input.aim = aim;
-      player.turretAngle = aim;
-    }
+    const seq = player.lastQueuedInputSeq + 1;
+    player.inputQueue.push({
+      seq,
+      dt: 1 / 30,
+      input: {
+        up: Boolean(input.up),
+        down: Boolean(input.down),
+        left: Boolean(input.left),
+        right: Boolean(input.right),
+        shooting: Boolean(input.shooting),
+        aim: Number.isFinite(Number(input.aim)) ? Number(input.aim) : player.turretAngle,
+      },
+    });
+    player.lastQueuedInputSeq = seq;
     return;
   }
   if (type === "grenade" && room.state === "playing") {
