@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/reliability.test.cjs tests/movement.test.cjs ../tests/client-recovery.test.cjs"
   },
   "engines": {
     "node": ">=20"
