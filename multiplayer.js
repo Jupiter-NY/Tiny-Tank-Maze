@@ -234,11 +234,15 @@
         };
       }
 
-      // Never snap the visible local tank backward to the server transform.
-      // When the server declares us dead, the local visual simply remains
-      // where the player currently sees it.
-      if (message.self && !message.self.alive && localVisual) {
-        // Intentionally keep localVisual unchanged.
+      // Death is the one time the local visual is allowed to snap back to the
+      // server, because the tank is no longer under local control.
+      if (message.self && !message.self.alive) {
+        localVisual = {
+          x: message.self.x,
+          y: message.self.y,
+          bodyAngle: message.self.bodyAngle,
+          turretAngle: message.self.turretAngle,
+        };
       }
       return;
     }
