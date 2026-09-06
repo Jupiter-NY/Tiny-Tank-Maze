@@ -1,0 +1,180 @@
+{
+  "measuredAt": "2026-09-06T14:45:29.379Z",
+  "finishedAt": "2026-09-06T14:45:43.746Z",
+  "browser": "151.0.7922.176",
+  "processor": "Apple M4",
+  "baselineCommit": "6fb5db6160ab376210f7daa53aaf7083bde9e328",
+  "sourceHashes": {
+    "baselineClient": "ec13b5bfb22b460603b5e5b0e4c9ee38ed268043ff1ca0346601eb57ac797de8",
+    "candidateClient": "6a56c2258b7eedb829603d240126d5bf6183901cddd4e388a263f9b206fab69f"
+  },
+  "method": "Actual Chrome Canvas2D full draw() calls using original function bodies and injected test state. requestAnimationFrame is controlled by harness; timing covers JavaScript and canvas command submission, not independently measured GPU completion or end-to-end gameplay FPS. Same fixed mazes/poses at native CPU and CDP4x CPU slowdown. 4 warm-up draws then20measured draws percase/variant. Comparison order alternates each sample.",
+  "conditions": [
+    {
+      "cpuSlowdown": 1,
+      "baselineMedianRange": [
+        7,
+        8.899999976158142
+      ],
+      "candidateMedianRange": [
+        3.5,
+        4.300000071525574
+      ],
+      "perCaseReductionPercentRange": [
+        46.91358099185808,
+        51.80722863879392
+      ],
+      "meanCaseMediansBefore": 7.8125,
+      "meanCaseMediansAfter": 3.8875000029802322,
+      "reductionOfMeanCaseMediansPercent": 50.23999996185302
+    },
+    {
+      "cpuSlowdown": 4,
+      "baselineMedianRange": [
+        30,
+        37.10000002384186
+      ],
+      "candidateMedianRange": [
+        14.699999928474426,
+        17.899999976158142
+      ],
+      "perCaseReductionPercentRange": [
+        50.0,
+        52.02156318035951
+      ],
+      "meanCaseMediansBefore": 33.01250001788139,
+      "meanCaseMediansAfter": 16.162500008940697,
+      "reductionOfMeanCaseMediansPercent": 51.0412722447976
+    }
+  ],
+  "pixelComparisons": [
+    {
+      "seed": 42,
+      "position": "center",
+      "visionBoost": false,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 42,
+      "position": "center",
+      "visionBoost": true,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 42,
+      "position": "corner",
+      "visionBoost": false,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 42,
+      "position": "corner",
+      "visionBoost": true,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 8675309,
+      "position": "center",
+      "visionBoost": false,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 8675309,
+      "position": "center",
+      "visionBoost": true,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 8675309,
+      "position": "corner",
+      "visionBoost": false,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    },
+    {
+      "seed": 8675309,
+      "position": "corner",
+      "visionBoost": true,
+      "canvasWidth": 1152,
+      "canvasHeight": 768,
+      "changedPixels": 0,
+      "changedChannels": 0,
+      "maxChannelDifference": 0,
+      "exact": true
+    }
+  ],
+  "errors": [],
+  "limits": "Local instrumented draw calls. No independently measured GPU completion, internet latency, full-match FPS, or guarantee that every tail frame improves. Other task tests and gameplay processes had stopped before this paired run.",
+  "tailFollowup": {
+    "measuredAt": "2026-09-06T14:49:06.344Z",
+    "samplesPerVariant": 120,
+    "scenario": {
+      "seed": 42,
+      "position": "center",
+      "visionBoost": false,
+      "cpuSlowdown": 1
+    },
+    "variants": {
+      "baseline": {
+        "minMs": 8.699999928474426,
+        "medianMs": 9.200000047683716,
+        "p95Ms": 9.400000095367432,
+        "p99Ms": 9.700000047683716,
+        "maxMs": 12.299999952316284
+      },
+      "candidate": {
+        "minMs": 4.100000023841858,
+        "medianMs": 4.299999952316284,
+        "p95Ms": 4.5,
+        "p99Ms": 10.899999976158142,
+        "maxMs": 11.300000071525574
+      }
+    },
+    "qualification": "Candidate first two measured draws were10.9 and11.3ms; following118 below9.5ms. Candidatep99 didnot improve; startup/JIT cause is an inference, not proven."
+  },
+  "separatePNGExportControl": {
+    "canvasPixels": 884736,
+    "baselineRepeatChangedPixels": 0,
+    "baselineVsCandidateChangedPixels": {
+      "normalVision": 469,
+      "boostedVision": 479
+    },
+    "maximumRGBDifference": 1,
+    "maximumAlphaDifference": 0,
+    "qualification": "Separate exports were not pixel-identical despite exact polygon geometry and eight identical immediateRGBA comparisons. Cause not established."
+  }
+}

@@ -1,5 +1,7 @@
 # Multiplayer handoff for Nolan and AI collaborators
 
+> The reliability work described below is the v5.8.1 baseline. This branch additionally contains a separate v5.8.2 fog optimization; see [FOG_PERFORMANCE.md](FOG_PERFORMANCE.md) for that follow-up. Its performance changes do not alter the server or networking settings.
+
 Date: September 6, 2026. Prepared with Codex at Nolan's parent's request.
 
 **Purpose:** fix confirmed multiplayer reliability bugs while preserving the rendering and networking behavior Nolan had just worked on. The separate stutter investigation below did not result in performance changes.
