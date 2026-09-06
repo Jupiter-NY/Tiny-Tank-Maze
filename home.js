@@ -175,11 +175,7 @@
       // The game still runs if browser storage is unavailable.
     }
 
-    if (mode === "multiplayer") {
-      window.location.href = "multiplayer.html";
-    } else {
-      window.location.href = `game.html?mode=${encodeURIComponent(mode)}`;
-    }
+    window.location.href = `game.html?mode=${encodeURIComponent(mode)}`;
   }
 
   for (const button of document.querySelectorAll(".mode-button")) {
