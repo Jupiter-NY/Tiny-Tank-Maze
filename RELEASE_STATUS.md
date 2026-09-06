@@ -11,11 +11,18 @@ Updated September 6, 2026, at the parent/project publisher's request.
 
 ## Hosting status
 
-Release is in progress. Publishing a branch is not proof of either deployment.
+**Vercel frontend: published and verified.** Client v5.8.2 is live at [littletinygames.com](https://littletinygames.com), deployed September 6, 2026 at approximately 15:34 UTC.
 
-- Vercel frontend: production publication and live checks pending at https://littletinygames.com.
-- Render multiplayer: existing https://tiny-tank-maze.onrender.com service responds to health checks; dashboard sign-in is needed to establish the deployed commit. Do not assume the merge has deployed the backend.
-- Vercel uses a manual nine-browser-asset upload; GitHub pushes do not automatically deploy that frontend. Existing domain/DNS and Supabase leaderboard configuration remain in use.
+- Browser source commit: `4e7a05c95def4db54495e3e3e0762cbd64ea0527`. Its game files are unchanged from the tested combined merge. This status update is a later documentation-only commit.
+- Vercel deployment: `dpl_2kYsgRCWTxXybGyTay16JAg2aEbB`, READY, production, aliased to the custom domain.
+- All nine public assets matched the staged SHA-256 manifest over HTTPS. The `www` redirect retained the path and query. Server source, SQL, README and Git config returned 404.
+- Live Chrome: two browser players created/joined/started a match with client v5.8.2, the maze rendered, departure produced a winner, and lobby/leave controls worked. Classic and Infinite launched, and existing global leaderboard rows loaded. No browser warning/error was recorded. No scores were intentionally submitted.
+
+**Render backend: live behavior checked; exact deployed commit unconfirmed.** The existing service responds to health checks. After the merges, an ordinary two-player protocol check passed 8/8: connection, room, readiness/start, movement, shooting, departure/winner/host transfer, rejoin/rematch and cleanup. A separate valid-message probe in its own temporary room rejected an out-of-map position, consistent with the new movement validation being active. All temporary rooms and connections were cleaned up.
+
+The Render dashboard is at a sign-in page, so this session could not inspect the deployment log/commit or initiate a manual Render deployment. The behavior above is evidence, not proof of the exact backend revision or every server-side fix. **Remaining release check for Nolan or the account owner:** open the existing Render service, confirm a successful deployment includes `6fb5db6160ab376210f7daa53aaf7083bde9e328` (present in combined merge `ba03f6342c5a485177ac5a5dae95dc902fa8c750` and browser source commit above), and deploy the latest `server` revision if necessary. Do not create a replacement service or change paid plans for this check.
+
+Vercel uses a manual nine-browser-asset upload; GitHub pushes do not automatically deploy that frontend. Existing domain/DNS and Supabase leaderboard configuration remain in use.
 
 See [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md) and [FOG_PERFORMANCE.md](FOG_PERFORMANCE.md) for changes, test evidence and known limits. A two-device human internet playtest is still useful for latency and device-specific stutter; the local draw-cost improvement does not establish a universal FPS or network improvement.
 
