@@ -1,4 +1,8 @@
-# Tiny Tank Maze — v4.2 Enemy Scaling
+# Tiny Tank Maze
+
+Current multiplayer release: **v5.8.2** on the `server` branch. See [RELEASE_STATUS.md](RELEASE_STATUS.md) for what is deployed and [MULTIPLAYER_SETUP.md](MULTIPLAYER_SETUP.md) for the two-host update workflow.
+
+## Earlier single-player updates — v4.2 Enemy Scaling
 
 For the September 6 multiplayer reliability fixes (client v5.8.1), testing instructions, remaining limits, and stutter notes, see [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md). AI collaborators should also read [AGENTS.md](AGENTS.md).
 

@@ -1,261 +1,139 @@
 # Tiny Tank Maze Multiplayer Setup
 
-This build keeps the existing GitHub Pages frontend and Supabase leaderboard,
-then adds a separate Node.js WebSocket server for real-time multiplayer.
+The website and multiplayer server are deployed separately:
 
-## Architecture
+| Component | Existing destination | Purpose |
+|---|---|---|
+| Browser files | Vercel, `https://littletinygames.com` | Website, controls, local tank movement, and drawing |
+| Multiplayer backend | Render, `https://tiny-tank-maze.onrender.com` | Rooms, maze generation, position validation, projectiles, damage, pickups, and match results |
+| Classic/Infinite leaderboard | Existing Supabase project | Stores the separate single-player leaderboard |
 
-```text
-littletinygames.com (GitHub Pages)
-        |
-        | wss:// WebSocket
-        v
-Node.js multiplayer server (Render)
-        |
-        +-- rooms
-        +-- movement / collision
-        +-- bullets / grenades
-        +-- health / deaths
-        +-- pickups
-        +-- visibility filtering
+The browser connects to `wss://tiny-tank-maze.onrender.com/ws`. The custom domain stays on Vercel; using Render for multiplayer does not require moving the website or changing its domain.
 
-Supabase remains separate and continues to store the global Classic/Infinite leaderboard.
-```
+Use the repository's **`server` branch** as the multiplayer release source. The default `main` branch can contain a different frontend. The Vercel workflow stages browser assets manually; a GitHub push alone does not establish that the website has updated. Render's current deployment settings and deployed commit must also be checked separately.
 
-## What multiplayer currently includes
+This document describes the update procedure, **not confirmation that a particular commit is live**. See [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md) for the reliability changes and known limits, and [FOG_PERFORMANCE.md](FOG_PERFORMANCE.md) for the separate fog optimization and its measurements.
 
-- private 5-character room codes
-- 2–8 player free-for-all
-- server-authoritative movement
-- synchronized maze generation
-- server-authoritative bullets and damage
-- grenades and explosion damage
-- heal, rapid-fire, vision, grenade, and radar-ping pickups
-- dynamic pickup spawning
-- last tank alive wins
-- host-controlled rematches
-- server-side line-of-sight filtering
-- dead players cannot spectate hidden enemy positions
-- WebSocket heartbeat cleanup
+## How multiplayer works
 
-This is intentionally separate from Classic and Infinite mode so those modes keep working normally.
+- Players create a private five-character room code or join a friend's room.
+- Rooms support 2–8 players, host-started matches, and host-controlled rematches.
+- The server generates the shared maze and controls bullets, grenades, damage, health, pickups, and results. A simultaneous final grenade elimination produces a draw.
+- The browser simulates its displayed tank and sends `client_state` messages containing position, aim, sequence number, timestamp, and shooting state.
+- The server checks playable bounds, destination wall collision, packet freshness, and a movement budget based on server time before accepting a position. It does **not** fully simulate authoritative movement from keyboard inputs.
+- Ongoing snapshots filter opponents by vision radius and maze line of sight. However, the initial `game_start` message broadcasts all player spawn coordinates. This is not a claim that hidden positions are never transmitted.
+- Disconnects show usable CREATE/JOIN controls again. Rejoining an already-running match is not supported.
 
----
+Position checks limit gross excessive movement and out-of-map jumps, but are not complete anti-cheat: a short wall crossing within the movement budget can remain possible. The previous straight-line path rejection is intentionally absent because valid delayed samples around a corner can have a chord that crosses a wall.
 
-# 1. Push the new files to GitHub
+## 1. Select and test the intended release
 
-Add these new files/folders to the same repository that hosts littletinygames.com:
+Start from the intended commit on `server` and record its full Git commit ID. Check the working tree before updating it so local work is preserved.
 
-```text
-multiplayer.html
-multiplayer.js
-server/
-    package.json
-    server.js
-    .gitignore
-MULTIPLAYER_SETUP.md
-```
+With Node 20 or newer, run:
 
-Replace these updated files:
-
-```text
-index.html
-home.js
-style.css
-config.js
-```
-
-Keep these existing files too:
-
-```text
-game.html
-game.js
-leaderboard.js
-supabase_setup.sql
-```
-
-IMPORTANT: if your current `config.js` already contains your real Supabase URL and
-publishable key, keep those two real values. Only add the new `multiplayerServer`
-field from the new config.
-
-Your config should eventually resemble:
-
-```js
-window.TANK_CONFIG = {
-  supabaseUrl: "https://YOURPROJECT.supabase.co",
-  supabasePublishableKey: "sb_publishable_...",
-  multiplayerServer: "wss://YOUR-RENDER-SERVICE.onrender.com/ws",
-};
-```
-
----
-
-# 2. Test the server locally first
-
-Open Terminal and enter the server folder:
-
-```bash
-cd path/to/tiny-tank-maze/server
+```sh
+cd server
 npm install
-npm start
+npm test
 ```
 
-The server should print something like:
+The current suite has **29 tests**, covering connection errors, elimination outcomes, movement validation, reconnect recovery, and fog equivalence. Keep the test result associated with the exact source commit being released.
 
-```text
-Tiny Tank Maze server listening on 0.0.0.0:3000
+For a local two-browser check, start the server from `server/`:
+
+```sh
+ALLOWED_ORIGINS=http://localhost:8000 npm start
 ```
 
-For local testing, temporarily set this in `config.js`:
+In an isolated local copy of the frontend, set only its multiplayer connection to:
 
 ```js
 multiplayerServer: "ws://localhost:3000/ws",
 ```
 
-Serve the website from the project root in another Terminal:
+Serve that copy from its root in another terminal:
 
-```bash
+```sh
 python3 -m http.server 8000
 ```
 
-Open two browser windows at:
+Open `http://localhost:8000/multiplayer.html` in two browser windows, create/join a room, start, move around corners, fire, throw a grenade, finish/rematch, and disconnect/reconnect. Preserve the existing Supabase URL and publishable key. The release configuration must use the public `wss://` URL below, not the temporary localhost URL.
+
+## 2. Update the existing Render service
+
+Use the **existing** `tiny-tank-maze.onrender.com` service; do not create a duplicate service for this update.
+
+In its dashboard, verify these settings rather than assuming they are already configured:
+
+| Setting | Intended value |
+|---|---|
+| Repository | `Jupiter-NY/Tiny-Tank-Maze` |
+| Branch | `server` |
+| Root directory | `server` |
+| Build command | `npm install` |
+| Start command | `npm start` |
+
+The server already listens on `0.0.0.0` and uses the hosting service's `PORT` environment variable. Check whether automatic deployments are enabled; otherwise deploy the selected commit manually through the existing service. Confirm that the deployment completed and that its **deployed commit ID matches the intended release**. A successful health response alone does not identify the deployed source version.
+
+Verify `ALLOWED_ORIGINS` includes the website origins that will actually be used, for example:
 
 ```text
-http://localhost:8000
+https://littletinygames.com,https://www.littletinygames.com
 ```
 
-Use Multiplayer -> Create Room in one window, then join that room code from the
-other window.
+If intentionally supporting Nolan's GitHub Pages test site, add its origin `https://jupiter-ny.github.io` as well. An origin has no repository path. Vercel preview and backup domains also need their own allowed origins if they will be used for multiplayer testing; do not assume they are accepted.
 
-Do not use `ws://localhost` after publishing the site. Public HTTPS pages should
-connect using `wss://`.
+Origin filtering restricts ordinary browser connections from other websites. It is not user authentication or complete protection against a custom WebSocket client.
 
----
-
-# 3. Deploy the server on Render
-
-1. Push the repository to GitHub.
-2. Open the Render dashboard.
-3. Choose **New -> Web Service**.
-4. Connect the same GitHub repository.
-5. Set **Root Directory** to:
+The expected backend endpoints are:
 
 ```text
-server
+https://tiny-tank-maze.onrender.com/health
+wss://tiny-tank-maze.onrender.com/ws
 ```
 
-6. Set **Build Command** to:
+## 3. Stage and deploy the browser files to Vercel
 
-```text
-npm install
-```
-
-7. Set **Start Command** to:
-
-```text
-npm start
-```
-
-The included server already listens on `0.0.0.0` and uses Render's `PORT`
-environment variable.
-
-## Recommended environment variable
-
-In Render, add:
-
-```text
-ALLOWED_ORIGINS=https://littletinygames.com,https://www.littletinygames.com
-```
-
-If you also want to test from your GitHub Pages URL, temporarily add it too:
-
-```text
-ALLOWED_ORIGINS=https://littletinygames.com,https://www.littletinygames.com,https://YOURNAME.github.io
-```
-
-This prevents arbitrary websites from opening multiplayer connections to your
-server with browser WebSockets.
-
----
-
-# 4. Put the Render WebSocket URL into config.js
-
-Render gives the service an address similar to:
-
-```text
-https://tiny-tank-maze-server.onrender.com
-```
-
-Use the WebSocket version plus `/ws`:
+Keep the existing Supabase configuration and confirm `config.js` contains:
 
 ```js
-multiplayerServer: "wss://tiny-tank-maze-server.onrender.com/ws",
+multiplayerServer: "wss://tiny-tank-maze.onrender.com/ws",
 ```
 
-Commit that `config.js` change to GitHub.
+Stage these **nine browser assets** from the same selected release into the existing Vercel release directory:
 
-Your published site at `https://littletinygames.com` can connect to that Render
-server even though they use different domains.
-
----
-
-# 5. Test the public multiplayer game
-
-Use two different browsers, computers, or one normal + one private/incognito window.
-
-1. Visit littletinygames.com.
-2. Enter a name.
-3. Select Multiplayer.
-4. Player 1 chooses Create Room.
-5. Copy the room code.
-6. Player 2 joins with that room code.
-7. Host starts the match.
-
-If it works, both tanks should move in the same maze and server-side bullets should
-damage the other player.
-
----
-
-# Important implementation details
-
-## Server authority
-
-The client sends controls such as:
-
-```json
-{
-  "type": "input",
-  "input": {
-    "up": true,
-    "down": false,
-    "left": false,
-    "right": false,
-    "shooting": false,
-    "aim": 1.7
-  }
-}
+```text
+index.html
+game.html
+multiplayer.html
+style.css
+config.js
+home.js
+leaderboard.js
+game.js
+multiplayer.js
 ```
 
-It does NOT send messages such as `I hit Player 2` or `my HP is 100`.
-The server determines those results.
+The deployment packaging script lives outside this repository. Check its asset list before using it: an older seven-file list omits `multiplayer.html` and `multiplayer.js`. Publish the staged files manually to the existing Vercel project serving `littletinygames.com` and retain its project/domain configuration. Do not put `server/`, `node_modules/`, tests, or database setup SQL into this static browser release.
 
-## Flashlight security
+Publishing these assets updates the website only; it does not update the Render server. Record the Vercel deployment identifier and source commit separately from the Render deployed commit. Preserve the previous release information for rollback.
 
-The server checks the player's vision radius and maze line-of-sight before sending
-other tank positions. If an opponent is behind a wall, that opponent is omitted
-from the snapshot sent to that browser.
+## 4. Verify the public release
 
-This is stronger than merely hiding an enemy in JavaScript because the hidden
-position is not sent to the client in the first place.
+After both deployments complete, use two devices or independent browser sessions:
 
-## Server memory
+1. Open `https://littletinygames.com` and select Multiplayer.
+2. Create a room on one device and join its code from the other.
+3. Start, move around corners, shoot, and use grenades.
+4. Finish a round and start a rematch.
+5. Disconnect a player and verify the visible recovery controls. Create/join a new room to reconnect; an ongoing match cannot be rejoined.
+6. Check Classic/Infinite mode still opens normally.
 
-Rooms currently live only in the server's RAM. If Render restarts the server,
-active rooms disappear. This is normal for this first multiplayer version and does
-not affect the Supabase leaderboard.
+Check the displayed client version and served browser files against the selected release, and verify the Render deployed commit in its dashboard. Record the website, backend, and two-device test results separately. A GitHub Pages test match is useful evidence for that site, but does not establish what Vercel currently serves.
 
-## Scaling later
+## Server state and operating limits
 
-This design intentionally assumes one server instance. If the game eventually has
-enough traffic to require multiple server instances, room state should be moved to
-shared infrastructure or players in a room need sticky/consistent routing.
+Rooms live in one server process's memory. Restarting or redeploying Render removes active rooms and disconnects players; they must create/join new rooms afterward. This does not change the separate Supabase leaderboard.
+
+This design assumes one backend instance. Running multiple instances would require an explicit room-routing and shared-state design. Local automated tests and a successful normal match do not establish capacity, real internet latency, or complete anti-cheat protection.

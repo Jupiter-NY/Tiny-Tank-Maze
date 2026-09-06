@@ -2,7 +2,7 @@
 
 Date: September 6, 2026. Client v5.8.2.
 
-This is a separate performance change on `perf/deduplicate-fog-rays`, based on the reliability candidate `6fb5db6160ab376210f7daa53aaf7083bde9e328` / [PR #1](https://github.com/Jupiter-NY/Tiny-Tank-Maze/pull/1). It is not merged or deployed. Review/apply the reliability fixes first, then this small follow-up; keep the performance commit independently reversible.
+This is a separate performance change on `perf/deduplicate-fog-rays`, based on the reliability candidate `6fb5db6160ab376210f7daa53aaf7083bde9e328` / [PR #1](https://github.com/Jupiter-NY/Tiny-Tank-Maze/pull/1). Both changes were merged into `server` on September 6, 2026, reliability first. The combined merge is `ba03f6342c5a485177ac5a5dae95dc902fa8c750`; deployment status is tracked separately in [RELEASE_STATUS.md](RELEASE_STATUS.md). Keep the performance commit independently reversible.
 
 ## The change
 

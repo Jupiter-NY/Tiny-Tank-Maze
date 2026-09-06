@@ -6,7 +6,7 @@ Date: September 6, 2026. Prepared with Codex at Nolan's parent's request.
 
 **Purpose:** fix confirmed multiplayer reliability bugs while preserving the rendering and networking behavior Nolan had just worked on. The separate stutter investigation below did not result in performance changes.
 
-Starting source: `server` branch, commit `5e9646f43a13170dc5f40eff67d2eb0b064450ef`, client v5.8.0. The fixes are isolated on `fix/multiplayer-reliability`, client v5.8.1. This branch is a review candidate, not a production release. It has not been merged into `server` or deployed to Vercel/Render as part of this work.
+Starting source: `server` branch, commit `5e9646f43a13170dc5f40eff67d2eb0b064450ef`, client v5.8.0. The fixes are isolated on `fix/multiplayer-reliability`, client v5.8.1. Both the reliability fixes and the separate v5.8.2 fog optimization were merged into `server` on September 6, 2026 ([PR #1](https://github.com/Jupiter-NY/Tiny-Tank-Maze/pull/1), [PR #2](https://github.com/Jupiter-NY/Tiny-Tank-Maze/pull/2)). The combined merge is `ba03f6342c5a485177ac5a5dae95dc902fa8c750`; its tree matches the tested v5.8.2 candidate. See [RELEASE_STATUS.md](RELEASE_STATUS.md) for the separate frontend/backend deployment status.
 
 ## What changed and why
 
@@ -71,7 +71,7 @@ Useful next observation: does the whole scene/local tank hitch, or only the othe
 
 - Play together on two devices: start, move around corners, shoot, use grenades, finish/rematch, and disconnect/reconnect. Local automation cannot establish performance over the actual internet connection.
 - Deploy the corresponding backend changes to Render and frontend changes to Vercel when a release is authorized. Only publishing the browser files will not fix the server issues.
-- The parent's current Vercel workflow stages browser assets manually. Its packaging list needs both `multiplayer.html` and `multiplayer.js` before a multiplayer release; that deployment tooling is outside this repository and was not changed here.
+- The parent's Vercel workflow stages nine browser assets manually, including `multiplayer.html` and `multiplayer.js`. The deployment tooling is outside this repository; a GitHub push does not automatically update Vercel.
 - At this handoff, multiplayer lives on `server`; the default `main` contains a different frontend. Choose the intended source explicitly rather than assuming `main` has these fixes.
 
 The known-good review baseline is the starting commit above. Keep these fixes separate from future performance experiments so each can be reviewed, tested, and reverted independently.
