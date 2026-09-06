@@ -56,14 +56,10 @@
   // reconciled or snapped to server snapshots while alive.
   let localVisual = null;
   let lastClientStateSentAt = 0;
-  let nextClientStateSeq = 1;
-  let pendingClientState = null;
-  let pendingFire = false;
 
-  // Remote players render the server hitbox/state through a jitter buffer.
-  // v5.6 deliberately does not extrapolate during missing snapshots.
+  // Remote players still render the server hitbox/state through a jitter buffer.
   const remoteHistories = new Map();
-  const MAX_EXTRAPOLATION_MS = 0;
+  const MAX_EXTRAPOLATION_MS = 120;
   let serverClockOffsetMs = 0;
   let hasClockSync = false;
   let jitterMs = 0;
@@ -209,20 +205,9 @@
       buildWalls();
       renderPlayers.clear();
       remoteHistories.clear();
-      const spawn = message.spawns?.[myId];
-      localVisual = spawn
-        ? {
-            x: spawn.x,
-            y: spawn.y,
-            bodyAngle: spawn.bodyAngle,
-            turretAngle: spawn.turretAngle,
-          }
-        : null;
+      localVisual = null;
       state = null;
       lastClientStateSentAt = 0;
-      nextClientStateSeq = 1;
-      pendingClientState = null;
-      pendingFire = false;
       previousSnapshotArrival = null;
       previousSnapshotServerTime = null;
       jitterMs = 0;
@@ -240,9 +225,6 @@
         Number(message.t) || Date.now()
       );
 
-      // Backward-compatible fallback only for an older server that did not put
-      // our spawn in game_start. Once localVisual exists, state.self x/y is
-      // never consumed again.
       if (!localVisual && message.self) {
         localVisual = {
           x: message.self.x,
@@ -252,7 +234,16 @@
         };
       }
 
-      // Never consume authoritative self x/y after initialization.
+      // Death is the one time the local visual is allowed to snap back to the
+      // server, because the tank is no longer under local control.
+      if (message.self && !message.self.alive) {
+        localVisual = {
+          x: message.self.x,
+          y: message.self.y,
+          bodyAngle: message.self.bodyAngle,
+          turretAngle: message.self.turretAngle,
+        };
+      }
       return;
     }
     if (message.type === "round_end") {
@@ -364,40 +355,6 @@
     );
   }
 
-  function buildClientState(fireNow = false) {
-    return {
-      type: "client_state",
-      state: {
-        seq: nextClientStateSeq++,
-        clientTime: Date.now(),
-        x: localVisual.x,
-        y: localVisual.y,
-        bodyAngle: localVisual.bodyAngle,
-        turretAngle: localVisual.turretAngle,
-        shooting: mouse.down || keys.shooting,
-        fireNow,
-      },
-    };
-  }
-
-  function flushLatestClientState() {
-    if (socket?.readyState !== WebSocket.OPEN || !pendingClientState) return;
-
-    // Never pile more movement history behind an already-backed-up WebSocket.
-    // Keep only one latest JS-side state while the transport drains.
-    if (socket.bufferedAmount > 1024) return;
-
-    const payload = pendingClientState;
-    pendingClientState = null;
-
-    if (pendingFire) {
-      payload.state.fireNow = true;
-      pendingFire = false;
-    }
-
-    socket.send(JSON.stringify(payload));
-  }
-
   function sendClientState({ fireNow = false, force = false } = {}) {
     if (
       roomState !== "playing" ||
@@ -407,15 +364,20 @@
     ) return;
 
     const now = performance.now();
-    if (!force && now - lastClientStateSentAt < 30) return;
+    if (!force && now - lastClientStateSentAt < 48) return;
     lastClientStateSentAt = now;
 
-    if (fireNow) pendingFire = true;
-
-    // Overwrite the previous unsent transform. There is no reason to deliver
-    // historical movement positions once a newer position exists.
-    pendingClientState = buildClientState(false);
-    flushLatestClientState();
+    safeSend({
+      type: "client_state",
+      state: {
+        x: localVisual.x,
+        y: localVisual.y,
+        bodyAngle: localVisual.bodyAngle,
+        turretAngle: localVisual.turretAngle,
+        shooting: mouse.down || keys.shooting,
+        fireNow,
+      },
+    });
   }
 
   function lerpAngle(a, b, t) {
@@ -556,99 +518,6 @@
     }
   }
 
-  function raySegmentIntersection(px, py, dx, dy, x1, y1, x2, y2) {
-    const sx = x2 - x1;
-    const sy = y2 - y1;
-    const denominator = dx * sy - dy * sx;
-
-    if (Math.abs(denominator) < 1e-9) return null;
-
-    const qx = x1 - px;
-    const qy = y1 - py;
-
-    const t = (qx * sy - qy * sx) / denominator;
-    const u = (qx * dy - qy * dx) / denominator;
-
-    if (t < 0 || u < 0 || u > 1) return null;
-
-    return {
-      x: px + dx * t,
-      y: py + dy * t,
-      distance: t,
-    };
-  }
-
-  function buildVisibilityPolygon(self) {
-    if (
-      !self ||
-      !Number.isFinite(self.x) ||
-      !Number.isFinite(self.y)
-    ) {
-      return [];
-    }
-
-    const radius =
-      BASE_VISION * (Number(self.visionLeft) > 0 ? 1.55 : 1);
-
-    const angles = [];
-    const points = [];
-    const baseRays = 240;
-
-    for (let i = 0; i < baseRays; i++) {
-      angles.push((i / baseRays) * Math.PI * 2);
-    }
-
-    // Add rays just to either side of every wall endpoint so corners block
-    // light cleanly instead of leaving visible cracks.
-    for (const segment of wallSegments) {
-      const endpoints = [
-        [segment[0], segment[1]],
-        [segment[2], segment[3]],
-      ];
-
-      for (const [x, y] of endpoints) {
-        const angle = Math.atan2(y - self.y, x - self.x);
-        angles.push(angle - 0.0008, angle, angle + 0.0008);
-      }
-    }
-
-    angles.sort((a, b) => a - b);
-
-    for (const angle of angles) {
-      const dx = Math.cos(angle);
-      const dy = Math.sin(angle);
-      let distance = radius;
-
-      for (const segment of wallSegments) {
-        const hit = raySegmentIntersection(
-          self.x,
-          self.y,
-          dx,
-          dy,
-          segment[0],
-          segment[1],
-          segment[2],
-          segment[3]
-        );
-
-        if (
-          hit &&
-          Number.isFinite(hit.distance) &&
-          hit.distance < distance
-        ) {
-          distance = Math.max(0, hit.distance - 1.5);
-        }
-      }
-
-      points.push({
-        x: self.x + dx * distance,
-        y: self.y + dy * distance,
-      });
-    }
-
-    return points;
-  }
-
   function drawMaze() {
     ctx.fillStyle = "#11151d"; ctx.fillRect(0, 0, W, H);
     ctx.strokeStyle = "#171d27"; ctx.lineWidth = 1;
@@ -682,16 +551,8 @@
     }
   }
   function drawFog(self) {
-    fogCtx.clearRect(0, 0, W, H);
-    fogCtx.fillStyle = "rgba(0,0,0,.975)";
-    fogCtx.fillRect(0, 0, W, H);
-
-    if (!self || !Number.isFinite(self.x) || !Number.isFinite(self.y)) {
-      ctx.drawImage(fogCanvas, 0, 0);
-      return;
-    }
-
     const points = buildVisibilityPolygon(self);
+    fogCtx.clearRect(0, 0, W, H); fogCtx.fillStyle = "rgba(0,0,0,.975)"; fogCtx.fillRect(0, 0, W, H);
     if (points.length < 3) { ctx.drawImage(fogCanvas, 0, 0); return; }
     const radius = BASE_VISION * (self.visionLeft > 0 ? 1.55 : 1);
     fogCtx.save(); fogCtx.globalCompositeOperation = "destination-out";
@@ -742,9 +603,7 @@
     for (const b of state.bullets || []) { ctx.fillStyle = b.ownerId === myId ? "#f4f7fb" : "#ff7b7b"; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); }
     for (const g of state.grenades || []) { ctx.fillStyle = "#ff9a4d"; ctx.beginPath(); ctx.arc(g.x, g.y, 6, 0, Math.PI * 2); ctx.fill(); }
     for (const p of renderPlayers.values()) drawTank(p, false);
-    const visualSelf = localVisual
-      ? { ...state.self, ...localVisual, alive: state.self.alive !== false }
-      : state.self;
+    const visualSelf = localVisual ? { ...state.self, ...localVisual } : state.self;
     drawFog(visualSelf);
     for (const ping of state.pings || []) { ctx.strokeStyle = "#b6aaff"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ping.x, ping.y, 18 + (1.5 - ping.left) * 16, 0, Math.PI * 2); ctx.stroke(); }
     drawTank(visualSelf, true);
@@ -811,15 +670,9 @@
     sendImmediateState(false);
   });
 
-  // The visible tank runs at browser frame rate. About 30 times per second we
-  // replace the pending server transform with the newest local state. If the
-  // WebSocket is backed up, older unsent states are discarded.
-  setInterval(() => {
-    sendClientState();
-    flushLatestClientState();
-  }, 1000 / 30);
-
-  setInterval(flushLatestClientState, 16);
+  // The visible tank runs at browser frame rate. The server hitbox receives
+  // transform updates at only ~20 Hz and may stay stationary during packet loss.
+  setInterval(() => sendClientState(), 50);
 
   setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
