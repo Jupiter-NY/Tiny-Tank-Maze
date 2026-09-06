@@ -56,10 +56,14 @@
   // reconciled or snapped to server snapshots while alive.
   let localVisual = null;
   let lastClientStateSentAt = 0;
+  let nextClientStateSeq = 1;
+  let pendingClientState = null;
+  let pendingFire = false;
 
-  // Remote players still render the server hitbox/state through a jitter buffer.
+  // Remote players render the server hitbox/state through a jitter buffer.
+  // v5.6 deliberately does not extrapolate during missing snapshots.
   const remoteHistories = new Map();
-  const MAX_EXTRAPOLATION_MS = 120;
+  const MAX_EXTRAPOLATION_MS = 0;
   let serverClockOffsetMs = 0;
   let hasClockSync = false;
   let jitterMs = 0;
@@ -205,9 +209,20 @@
       buildWalls();
       renderPlayers.clear();
       remoteHistories.clear();
-      localVisual = null;
+      const spawn = message.spawns?.[myId];
+      localVisual = spawn
+        ? {
+            x: spawn.x,
+            y: spawn.y,
+            bodyAngle: spawn.bodyAngle,
+            turretAngle: spawn.turretAngle,
+          }
+        : null;
       state = null;
       lastClientStateSentAt = 0;
+      nextClientStateSeq = 1;
+      pendingClientState = null;
+      pendingFire = false;
       previousSnapshotArrival = null;
       previousSnapshotServerTime = null;
       jitterMs = 0;
@@ -225,6 +240,9 @@
         Number(message.t) || Date.now()
       );
 
+      // Backward-compatible fallback only for an older server that did not put
+      // our spawn in game_start. Once localVisual exists, state.self x/y is
+      // never consumed again.
       if (!localVisual && message.self) {
         localVisual = {
           x: message.self.x,
@@ -234,16 +252,7 @@
         };
       }
 
-      // Death is the one time the local visual is allowed to snap back to the
-      // server, because the tank is no longer under local control.
-      if (message.self && !message.self.alive) {
-        localVisual = {
-          x: message.self.x,
-          y: message.self.y,
-          bodyAngle: message.self.bodyAngle,
-          turretAngle: message.self.turretAngle,
-        };
-      }
+      // Never consume authoritative self x/y after initialization.
       return;
     }
     if (message.type === "round_end") {
@@ -355,6 +364,40 @@
     );
   }
 
+  function buildClientState(fireNow = false) {
+    return {
+      type: "client_state",
+      state: {
+        seq: nextClientStateSeq++,
+        clientTime: Date.now(),
+        x: localVisual.x,
+        y: localVisual.y,
+        bodyAngle: localVisual.bodyAngle,
+        turretAngle: localVisual.turretAngle,
+        shooting: mouse.down || keys.shooting,
+        fireNow,
+      },
+    };
+  }
+
+  function flushLatestClientState() {
+    if (socket?.readyState !== WebSocket.OPEN || !pendingClientState) return;
+
+    // Never pile more movement history behind an already-backed-up WebSocket.
+    // Keep only one latest JS-side state while the transport drains.
+    if (socket.bufferedAmount > 1024) return;
+
+    const payload = pendingClientState;
+    pendingClientState = null;
+
+    if (pendingFire) {
+      payload.state.fireNow = true;
+      pendingFire = false;
+    }
+
+    socket.send(JSON.stringify(payload));
+  }
+
   function sendClientState({ fireNow = false, force = false } = {}) {
     if (
       roomState !== "playing" ||
@@ -364,20 +407,15 @@
     ) return;
 
     const now = performance.now();
-    if (!force && now - lastClientStateSentAt < 48) return;
+    if (!force && now - lastClientStateSentAt < 30) return;
     lastClientStateSentAt = now;
 
-    safeSend({
-      type: "client_state",
-      state: {
-        x: localVisual.x,
-        y: localVisual.y,
-        bodyAngle: localVisual.bodyAngle,
-        turretAngle: localVisual.turretAngle,
-        shooting: mouse.down || keys.shooting,
-        fireNow,
-      },
-    });
+    if (fireNow) pendingFire = true;
+
+    // Overwrite the previous unsent transform. There is no reason to deliver
+    // historical movement positions once a newer position exists.
+    pendingClientState = buildClientState(false);
+    flushLatestClientState();
   }
 
   function lerpAngle(a, b, t) {
@@ -670,9 +708,15 @@
     sendImmediateState(false);
   });
 
-  // The visible tank runs at browser frame rate. The server hitbox receives
-  // transform updates at only ~20 Hz and may stay stationary during packet loss.
-  setInterval(() => sendClientState(), 50);
+  // The visible tank runs at browser frame rate. About 30 times per second we
+  // replace the pending server transform with the newest local state. If the
+  // WebSocket is backed up, older unsent states are discarded.
+  setInterval(() => {
+    sendClientState();
+    flushLatestClientState();
+  }, 1000 / 30);
+
+  setInterval(flushLatestClientState, 16);
 
   setInterval(() => {
     if (socket?.readyState !== WebSocket.OPEN) return;
