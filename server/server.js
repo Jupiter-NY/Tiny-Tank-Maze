@@ -446,17 +446,20 @@ function applyClientTransform(room, player, state) {
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
 
-  // v5.4 prioritizes local smoothness. Delayed packets should not cause the
-  // server hitbox to reject valid client movement merely because the client
-  // got farther ahead while packets were missing.
-  //
-  // The server still rejects transforms that are inside or cross maze walls.
-  if (collidesWalls(room, x, y, PLAYER_RADIUS)) return false;
+  const now = nowSeconds();
+  const elapsed = clamp(now - (player.lastClientStateAt || now), 0.001, 2.0);
+
+  // Client movement is trusted for responsiveness, but reject impossible
+  // teleports and paths that cross maze walls.
+  const maxDistance = 165 * elapsed + 24;
+  const distance = Math.hypot(x - player.x, y - player.y);
+
+  if (distance > maxDistance) return false;
   if (!pathClearForCircle(room, player.x, player.y, x, y, PLAYER_RADIUS)) return false;
 
   player.x = x;
   player.y = y;
-  player.lastClientStateAt = nowSeconds();
+  player.lastClientStateAt = now;
 
   if (Number.isFinite(bodyAngle)) player.bodyAngle = bodyAngle;
   if (Number.isFinite(turretAngle)) {
