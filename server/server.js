@@ -9,7 +9,7 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 
 const PORT = Number(process.env.PORT || 3000);
 const TICK_RATE = 30;
-const SNAPSHOT_RATE = 15;
+const SNAPSHOT_RATE = 20;
 const MAX_PLAYERS = 8;
 const MIN_PLAYERS_TO_START = 2;
 
@@ -70,6 +70,12 @@ function safeSend(ws, payload) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload));
   }
+}
+
+function safeSendState(ws, payload) {
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > 128 * 1024) return;
+  ws.send(JSON.stringify(payload));
 }
 function broadcastRoom(room, payload) {
   for (const player of room.players.values()) safeSend(player.ws, payload);
@@ -538,6 +544,16 @@ function handleMessage(player, message) {
     sendRoomUpdate(room);
     return;
   }
+  if (type === "ping") {
+    const sentAt = Number(message.sentAt);
+    safeSend(player.ws, {
+      type: "pong",
+      sentAt: Number.isFinite(sentAt) ? sentAt : 0,
+      serverAt: Date.now(),
+    });
+    return;
+  }
+
   const room = player.roomCode ? rooms.get(player.roomCode) : null;
   if (!room) return;
   if (type === "set_ready" && room.state !== "playing") {
@@ -585,15 +601,21 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+let lastTickAt = Date.now();
+
 setInterval(() => {
-  const dt = 1 / TICK_RATE;
+  const now = Date.now();
+  const dt = Math.min(0.05, Math.max(0.001, (now - lastTickAt) / 1000));
+  lastTickAt = now;
   for (const room of rooms.values()) updateRoom(room, dt);
 }, 1000 / TICK_RATE);
 
 setInterval(() => {
   for (const room of rooms.values()) {
     if (room.state !== "playing") continue;
-    for (const viewer of room.players.values()) safeSend(viewer.ws, stateForViewer(room, viewer));
+    for (const viewer of room.players.values()) {
+      safeSendState(viewer.ws, stateForViewer(room, viewer));
+    }
   }
 }, 1000 / SNAPSHOT_RATE);
 
