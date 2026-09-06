@@ -1,5 +1,7 @@
 # Tiny Tank Maze — v4.2 Enemy Scaling
 
+For the September 6 multiplayer reliability fixes (client v5.8.1), testing instructions, remaining limits, and stutter notes, see [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md). AI collaborators should also read [AGENTS.md](AGENTS.md).
+
 This version keeps the global Supabase leaderboard from v4.1 and makes
 Infinite mode ramp much faster.
 

@@ -20,6 +20,10 @@ const ROWS = 12;
 const CELL = 64;
 const WALL = 8;
 const PLAYER_RADIUS = 14;
+// The browser moves at 165 px/s. A little rate and burst slack absorbs timing
+// jitter without granting fresh extra distance for every received packet.
+const MAX_CLIENT_MOVE_SPEED = 185;
+const CLIENT_MOVE_SLACK = 32;
 const BULLET_RADIUS = 4;
 const GRENADE_RADIUS = 6;
 const BASE_VISION = 235;
@@ -257,6 +261,7 @@ function makePlayer(ws, name) {
     // separate hitbox transform and updates it when client-state packets arrive.
     input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
     lastClientStateAt: nowSeconds(),
+    movementCredit: CLIENT_MOVE_SLACK,
     lastClientStateSeq: 0,
     clientClockBaselineMs: null,
   };
@@ -335,6 +340,7 @@ function resetRoomForGame(room) {
       fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
       input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
       lastClientStateAt: nowSeconds(),
+      movementCredit: CLIENT_MOVE_SLACK,
       lastClientStateSeq: 0,
       clientClockBaselineMs: null,
     });
@@ -387,7 +393,7 @@ function throwGrenade(room, player) {
     fuse: 1.25,
   });
 }
-function damagePlayer(room, target, amount, attackerId) {
+function damagePlayer(room, target, amount, attackerId, deferRoundEnd = false) {
   if (!target.alive) return;
   target.hp -= amount;
   if (target.hp > 0) return;
@@ -398,7 +404,7 @@ function damagePlayer(room, target, amount, attackerId) {
   if (attacker && attacker.id !== target.id) attacker.kills++;
   room.feed.push({ text: `${attacker?.name || "Explosion"} eliminated ${target.name}`, at: Date.now() });
   room.feed = room.feed.slice(-5);
-  checkRoundEnd(room);
+  if (!deferRoundEnd) checkRoundEnd(room);
 }
 function explodeGrenade(room, grenade) {
   const radius = 105;
@@ -407,9 +413,11 @@ function explodeGrenade(room, grenade) {
     const d = Math.hypot(p.x - grenade.x, p.y - grenade.y);
     if (d <= radius && hasLineOfSight(room, grenade.x, grenade.y, p.x, p.y)) {
       const damage = d < 48 ? 60 : 36;
-      damagePlayer(room, p, damage, grenade.ownerId);
+      // One blast is a single event: resolve every victim before choosing a winner.
+      damagePlayer(room, p, damage, grenade.ownerId, true);
     }
   }
+  checkRoundEnd(room);
 }
 function applyPickup(room, player, pickup) {
   const now = nowSeconds();
@@ -446,19 +454,25 @@ function applyClientTransform(room, player, state) {
   const turretAngle = Number(state?.turretAngle);
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
-
-  // v5.5: never let a missed/late packet leave the server hitbox permanently
-  // behind the visual tank. The previous straight-line path test could reject
-  // perfectly valid movement around corners because two 20 Hz samples were
-  // connected by a chord that clipped a wall.
-  //
-  // Only reject a reported position if the tank itself would end inside a wall.
-  // Otherwise the server hitbox teleports directly to the newest client state.
+  const edge = WALL + PLAYER_RADIUS;
+  if (x < edge || x > W - edge || y < edge || y > H - edge) return false;
   if (collidesWalls(room, x, y, PLAYER_RADIUS)) return false;
+
+  const now = nowSeconds();
+  const elapsed = Math.max(0, now - player.lastClientStateAt);
+  const available = player.movementCredit + elapsed * MAX_CLIENT_MOVE_SPEED;
+  const distance = Math.hypot(x - player.x, y - player.y);
+  if (distance > available + 1e-6) return false;
+
+  // Keep elapsed time during real network stalls, but bank only a small amount
+  // of unused credit. Do not restore the old straight-line wall-path check:
+  // two valid delayed samples may be on opposite sides of a corner turn.
+  // This bounds gross movement abuse, not every possible client-side wall hack.
+  player.movementCredit = Math.min(CLIENT_MOVE_SLACK, available - distance);
 
   player.x = x;
   player.y = y;
-  player.lastClientStateAt = nowSeconds();
+  player.lastClientStateAt = now;
 
   if (Number.isFinite(bodyAngle)) player.bodyAngle = bodyAngle;
   if (Number.isFinite(turretAngle)) {
@@ -501,7 +515,11 @@ function updateRoom(room, dt) {
       for (const p of room.players.values()) {
         if (!p.alive || p.id === b.ownerId) continue;
         if (dist2(b.x, b.y, p.x, p.y) < (PLAYER_RADIUS + BULLET_RADIUS) ** 2) {
-          b.dead = true; damagePlayer(room, p, b.damage, b.ownerId); break;
+          b.dead = true;
+          damagePlayer(room, p, b.damage, b.ownerId);
+          // Once announced, the result must survive the rest of this tick.
+          if (room.state !== "playing") return;
+          break;
         }
       }
     }
@@ -510,7 +528,12 @@ function updateRoom(room, dt) {
 
   for (const g of room.grenades) {
     g.fuse -= dt;
-    if (g.fuse <= 0) { explodeGrenade(room, g); g.dead = true; continue; }
+    if (g.fuse <= 0) {
+      explodeGrenade(room, g);
+      g.dead = true;
+      if (room.state !== "playing") return;
+      continue;
+    }
     const steps = 4;
     for (let i = 0; i < steps; i++) {
       const nx = g.x + g.vx * dt / steps, ny = g.y + g.vy * dt / steps;
@@ -677,6 +700,9 @@ function handleMessage(player, message) {
 }
 
 wss.on("connection", (ws, req) => {
+  // Protocol errors are emitted outside the JSON message handler. Isolate the
+  // failed connection so other players and rooms can keep running.
+  ws.on("error", () => { ws.terminate(); });
   const origin = String(req.headers.origin || "");
   if (allowedOrigins.length && !allowedOrigins.includes(origin)) {
     ws.close(1008, "Origin not allowed");
