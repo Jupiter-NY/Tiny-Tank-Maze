@@ -252,7 +252,14 @@ function makePlayer(ws, name) {
     ready: false, x: W / 2, y: H / 2, bodyAngle: 0, turretAngle: 0,
     hp: 100, maxHp: 100, alive: true, grenades: 3, kills: 0,
     fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
+
+    // v5.2 networking: the browser sends fixed-timestep user commands.
+    // The server processes them authoritatively and acknowledges the last seq.
     input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
+    inputQueue: [],
+    lastQueuedInputSeq: 0,
+    lastProcessedInputSeq: 0,
+    inputBudget: 0.05,
   };
 }
 function publicLobbyPlayers(room) {
@@ -328,6 +335,10 @@ function resetRoomForGame(room) {
       hp: 100, maxHp: 100, alive: true, grenades: 3, kills: 0,
       fireCooldown: 0, rapidUntil: 0, visionUntil: 0, pingMarkers: [],
       input: { up: false, down: false, left: false, right: false, shooting: false, aim: 0 },
+      inputQueue: [],
+      lastQueuedInputSeq: 0,
+      lastProcessedInputSeq: 0,
+      inputBudget: 0.05,
     });
   }
   spawnPickup(room, "grenade");
@@ -374,6 +385,7 @@ function damagePlayer(room, target, amount, attackerId) {
   target.hp = 0;
   target.alive = false;
   target.input.shooting = false;
+  target.inputQueue = [];
   const attacker = room.players.get(attackerId);
   if (attacker && attacker.id !== target.id) attacker.kills++;
   room.feed.push({ text: `${attacker?.name || "Explosion"} eliminated ${target.name}`, at: Date.now() });
@@ -417,25 +429,65 @@ function checkRoundEnd(room) {
   sendRoomUpdate(room);
 }
 
+function processPlayerCommand(room, player, command) {
+  const input = command.input || {};
+  player.input = input;
+
+  let dx = 0, dy = 0;
+  if (input.up) dy -= 1;
+  if (input.down) dy += 1;
+  if (input.left) dx -= 1;
+  if (input.right) dx += 1;
+
+  if (dx || dy) {
+    const len = Math.hypot(dx, dy);
+    dx /= len;
+    dy /= len;
+    player.bodyAngle = Math.atan2(dy, dx);
+    moveCircle(
+      room,
+      player,
+      dx * 165 * command.dt,
+      dy * 165 * command.dt,
+      PLAYER_RADIUS
+    );
+  }
+
+  if (Number.isFinite(input.aim)) player.turretAngle = input.aim;
+  if (input.shooting) shoot(room, player);
+
+  player.lastProcessedInputSeq = command.seq;
+}
+
 function updateRoom(room, dt) {
   if (room.state !== "playing") return;
   const now = nowSeconds();
   for (const p of room.players.values()) {
     p.fireCooldown = Math.max(0, p.fireCooldown - dt);
     p.pingMarkers = p.pingMarkers.filter((m) => m.expiresAt > now);
-    if (!p.alive) continue;
-    let dx = 0, dy = 0;
-    if (p.input.up) dy -= 1;
-    if (p.input.down) dy += 1;
-    if (p.input.left) dx -= 1;
-    if (p.input.right) dx += 1;
-    if (dx || dy) {
-      const len = Math.hypot(dx, dy); dx /= len; dy /= len;
-      p.bodyAngle = Math.atan2(dy, dx);
-      moveCircle(room, p, dx * 165 * dt, dy * 165 * dt, PLAYER_RADIUS);
+    if (!p.alive) {
+      p.inputQueue = [];
+      continue;
     }
-    if (Number.isFinite(p.input.aim)) p.turretAngle = p.input.aim;
-    if (p.input.shooting) shoot(room, p);
+
+    // Commands normally arrive at 60 Hz in 2-command batches. The budget is
+    // replenished using real server time, preventing a client from gaining
+    // speed by submitting excessive simulated time. A small burst reserve
+    // allows short network stalls to catch up without permanent rubber-banding.
+    p.inputBudget = Math.min(0.12, p.inputBudget + dt);
+    let processedThisTick = 0;
+
+    while (p.inputQueue.length && processedThisTick < 12) {
+      const command = p.inputQueue[0];
+
+      if (command.dt > p.inputBudget + 1e-6) break;
+
+      p.inputQueue.shift();
+      p.inputBudget = Math.max(0, p.inputBudget - command.dt);
+      processPlayerCommand(room, p, command);
+      processedThisTick++;
+    }
+
     for (let i = room.pickups.length - 1; i >= 0; i--) {
       const pickup = room.pickups[i];
       if (dist2(p.x, p.y, pickup.x, pickup.y) < 25 ** 2) {
@@ -509,6 +561,7 @@ function stateForViewer(room, viewer) {
       id: viewer.id, x: viewer.x, y: viewer.y, bodyAngle: viewer.bodyAngle,
       turretAngle: viewer.turretAngle, hp: viewer.hp, maxHp: viewer.maxHp,
       alive: viewer.alive, grenades: viewer.grenades, kills: viewer.kills,
+      lastProcessedInputSeq: viewer.lastProcessedInputSeq,
       rapidLeft: Math.max(0, viewer.rapidUntil - nowSeconds()),
       visionLeft: Math.max(0, viewer.visionUntil - nowSeconds()),
     },
@@ -564,13 +617,59 @@ function handleMessage(player, message) {
     if (room.players.size < MIN_PLAYERS_TO_START) return safeSend(player.ws, { type: "error", message: "At least 2 players are required." });
     resetRoomForGame(room); sendRoomUpdate(room); return;
   }
+  if (type === "inputs" && room.state === "playing") {
+    const commands = Array.isArray(message.commands)
+      ? message.commands.slice(0, 12)
+      : [];
+
+    for (const raw of commands) {
+      const seq = Number(raw?.seq);
+      const rawDt = Number(raw?.dt);
+      const input = raw?.input || {};
+
+      if (!Number.isSafeInteger(seq) || seq <= player.lastQueuedInputSeq) continue;
+      if (!Number.isFinite(rawDt) || rawDt < 0 || rawDt > 0.04) continue;
+
+      // Do not allow an unbounded client backlog to consume server memory.
+      if (player.inputQueue.length >= 180) break;
+
+      const aim = Number(input.aim);
+      const command = {
+        seq,
+        dt: clamp(rawDt, 0, 1 / 30),
+        input: {
+          up: Boolean(input.up),
+          down: Boolean(input.down),
+          left: Boolean(input.left),
+          right: Boolean(input.right),
+          shooting: Boolean(input.shooting),
+          aim: Number.isFinite(aim) ? aim : player.turretAngle,
+        },
+      };
+
+      player.inputQueue.push(command);
+      player.lastQueuedInputSeq = seq;
+    }
+    return;
+  }
+
+  // Temporary compatibility with the v5/v5.1 client during a rolling deploy.
   if (type === "input" && room.state === "playing") {
     const input = message.input || {};
-    player.input.up = Boolean(input.up); player.input.down = Boolean(input.down);
-    player.input.left = Boolean(input.left); player.input.right = Boolean(input.right);
-    player.input.shooting = Boolean(input.shooting);
-    const aim = Number(input.aim);
-    if (Number.isFinite(aim)) player.input.aim = aim;
+    const seq = player.lastQueuedInputSeq + 1;
+    player.inputQueue.push({
+      seq,
+      dt: 1 / 30,
+      input: {
+        up: Boolean(input.up),
+        down: Boolean(input.down),
+        left: Boolean(input.left),
+        right: Boolean(input.right),
+        shooting: Boolean(input.shooting),
+        aim: Number.isFinite(Number(input.aim)) ? Number(input.aim) : player.turretAngle,
+      },
+    });
+    player.lastQueuedInputSeq = seq;
     return;
   }
   if (type === "grenade" && room.state === "playing") {
