@@ -290,7 +290,7 @@
       icon: "M",
       name: "Multi Shot",
       maxStack: 3,
-      description: "Fire paired side shots with every trigger pull. Stacks grow the volley from 3 to 5 to 7 bullets.",
+      description: "Fire 3, 5, then 7 bullets per volley. While Multi Shot is active, every pellet deals 50% direct bullet damage.",
     },
     {
       id: "poison",
@@ -448,22 +448,48 @@
   }
 
   function rollEnemyTraits(wave) {
+    const traits = {
+      type: "normal",
+      rapid: false,
+      explosive: false,
+      multishot: false,
+      poison: false,
+      sniper: false,
+      bounce: false,
+    };
+
     if (MODE !== "infinite" || wave <= 5) {
-      return { rapid: false, explosive: false };
+      return traits;
     }
 
-    // Wave 6 introduces rapid enemies gently.
-    const rapidChance =
-      wave >= 6 ? Math.min(0.42, 0.10 + (wave - 6) * 0.025) : 0;
+    // Special enemies become more common gradually, but each special enemy
+    // gets one primary archetype so its behavior and visuals stay readable.
+    const specialChance = Math.min(0.72, 0.12 + (wave - 6) * 0.035);
+    if (Math.random() >= specialChance) return traits;
 
-    // Explosive enemies arrive later so the first difficulty jump is readable.
-    const explosiveChance =
-      wave >= 8 ? Math.min(0.40, 0.10 + (wave - 8) * 0.025) : 0;
+    const pool = [
+      { type: "rapid", unlock: 6, weight: 1.25 },
+      { type: "multishot", unlock: 7, weight: 1.05 },
+      { type: "explosive", unlock: 8, weight: 1.00 },
+      { type: "poison", unlock: 9, weight: 0.95 },
+      { type: "bounce", unlock: 10, weight: 0.90 },
+      { type: "sniper", unlock: 11, weight: 0.75 },
+    ].filter((entry) => wave >= entry.unlock);
 
-    return {
-      rapid: Math.random() < rapidChance,
-      explosive: Math.random() < explosiveChance,
-    };
+    let roll = Math.random() * pool.reduce((sum, entry) => sum + entry.weight, 0);
+    let chosen = pool[0];
+
+    for (const entry of pool) {
+      roll -= entry.weight;
+      if (roll <= 0) {
+        chosen = entry;
+        break;
+      }
+    }
+
+    traits.type = chosen.type;
+    traits[chosen.type] = true;
+    return traits;
   }
 
   function getUpgradeById(id) {
@@ -510,7 +536,7 @@
     if (id === "multishot") {
       const bulletsPerVolley = 1 + Math.min(3, nextStack) * 2;
       const spread = 5 + Math.min(3, nextStack) * 4;
-      return `${bulletsPerVolley} bullets per volley • ±${spread}° spread`;
+      return `${bulletsPerVolley} bullets • 50% direct damage each • ±${spread}° spread`;
     }
 
     if (id === "poison") {
@@ -906,10 +932,34 @@
       }
 
       const pos = cellCenter(cell.c, cell.r);
-
       const scaling = getEnemyScaling(roundNumber);
       const traits = rollEnemyTraits(roundNumber);
+
       const rapidMultiplier = traits.rapid ? 0.55 : 1;
+      const sniperReloadMultiplier = traits.sniper ? 3.15 : 1;
+
+      let bulletDamage = scaling.damage;
+      let bulletSpeed = scaling.bulletSpeed;
+      let moveSpeed = 88 + Math.random() * 18 + scaling.speedBonus;
+
+      if (traits.multishot) {
+        // Three pellets; each pellet is deliberately weaker than a normal shot.
+        bulletDamage = Math.max(8, Math.round(scaling.damage * 0.58));
+      }
+
+      if (traits.poison) {
+        bulletDamage = Math.max(7, Math.round(scaling.damage * 0.68));
+      }
+
+      if (traits.bounce) {
+        bulletDamage = Math.max(8, Math.round(scaling.damage * 0.85));
+      }
+
+      if (traits.sniper) {
+        bulletDamage = Math.round(scaling.damage * 2.25);
+        bulletSpeed = Math.max(540, Math.round(scaling.bulletSpeed * 1.55));
+        moveSpeed = 70 + Math.random() * 10 + scaling.speedBonus * 0.45;
+      }
 
       enemies.push({
         x: pos.x,
@@ -918,15 +968,31 @@
         turretAngle: 0,
         hp: scaling.maxHp,
         maxHp: scaling.maxHp,
-        bulletDamage: scaling.damage,
-        bulletSpeed: scaling.bulletSpeed,
+        bulletDamage,
+        bulletSpeed,
         fireDelayMultiplier:
-          scaling.fireRateMultiplier * rapidMultiplier,
+          scaling.fireRateMultiplier *
+          rapidMultiplier *
+          sniperReloadMultiplier,
+
+        enemyType: traits.type,
         rapidTrait: traits.rapid,
         explosiveTrait: traits.explosive,
+        multishotTrait: traits.multishot,
+        poisonTrait: traits.poison,
+        sniperTrait: traits.sniper,
+        bounceTrait: traits.bounce,
+
         explosiveRadius: Math.min(88, 52 + roundNumber * 2),
         explosiveDamage: Math.round(scaling.damage * 0.55),
-        speed: 88 + Math.random() * 18 + scaling.speedBonus,
+
+        poisonDps: traits.poison
+          ? Math.min(9, 3.5 + roundNumber * 0.25)
+          : 0,
+        poisonDuration: traits.poison ? 3.2 : 0,
+        bulletBounces: traits.bounce ? 2 : 0,
+
+        speed: moveSpeed,
         fireCooldown: 0.5 + Math.random(),
         wanderCell: null,
         rememberPlayerUntil: 0,
@@ -982,6 +1048,9 @@
         bounceblast: 0,
       },
       lastHitAt: -Infinity,
+      enemyPoisonUntil: 0,
+      enemyPoisonDps: 0,
+      enemyPoisonSource: null,
       alive: true,
     };
 
@@ -1200,7 +1269,7 @@
       fireDelay = Math.max(0.065, fireDelay);
     } else {
       fireDelay *= owner.fireDelayMultiplier || 1;
-      fireDelay = Math.max(0.22, fireDelay);
+      fireDelay = Math.max(owner.sniperTrait ? 1.7 : 0.22, fireDelay);
     }
 
     owner.fireCooldown = fireDelay;
@@ -1209,25 +1278,41 @@
       ? speed * Math.pow(1.18, getUpgradeStack("velocity"))
       : owner.bulletSpeed || speed;
 
-    const muzzle = 22;
+    const muzzle = !isPlayer && owner.sniperTrait ? 40 : 22;
     const baseDamage = isPlayer
       ? 30 + getUpgradeStack("damage") * 8
       : owner.bulletDamage || 20;
 
-    const multishotLevel = isPlayer ? Math.min(3, getUpgradeStack("multishot")) : 0;
-    const pelletCount = isPlayer ? 1 + multishotLevel * 2 : 1;
-    const spreadStep = multishotLevel > 0
-      ? ((4 + multishotLevel * 1.5) * Math.PI) / 180
+    const multishotLevel = isPlayer
+      ? Math.min(3, getUpgradeStack("multishot"))
       : 0;
+
+    const pelletCount = isPlayer
+      ? 1 + multishotLevel * 2
+      : owner.multishotTrait
+        ? 3
+        : 1;
+
+    const spreadStep = isPlayer && multishotLevel > 0
+      ? ((4 + multishotLevel * 1.5) * Math.PI) / 180
+      : !isPlayer && owner.multishotTrait
+        ? (8 * Math.PI) / 180
+        : 0;
 
     for (let pellet = 0; pellet < pelletCount; pellet++) {
       const offsetIndex = pellet - (pelletCount - 1) / 2;
       const shotAngle = angle + offsetIndex * spreadStep;
-      const isCenterPellet = Math.abs(offsetIndex) < 0.01;
-      const pelletDamage = isPlayer && !isCenterPellet
-        ? Math.round(baseDamage * 0.82)
-        : baseDamage;
-      const bounceExplosionLevel = isPlayer ? getUpgradeStack("bounceblast") : 0;
+
+      // Multi Shot's balancing rule: once the player has any Multi Shot stack,
+      // every pellet, including the center pellet, deals half direct damage.
+      const pelletDamage =
+        isPlayer && multishotLevel > 0
+          ? Math.max(1, Math.round(baseDamage * 0.5))
+          : baseDamage;
+
+      const bounceExplosionLevel = isPlayer
+        ? getUpgradeStack("bounceblast")
+        : 0;
 
       bullets.push({
         x: owner.x + Math.cos(shotAngle) * muzzle,
@@ -1235,17 +1320,28 @@
         vx: Math.cos(shotAngle) * bulletSpeed,
         vy: Math.sin(shotAngle) * bulletSpeed,
         owner,
-        life: isPlayer ? 2.8 : 2.2,
+        life: isPlayer ? 2.8 : owner.sniperTrait ? 3.0 : 2.2,
         damage: pelletDamage,
+
         bouncesLeft: isPlayer
           ? getUpgradeStack("ricochet") + (bounceExplosionLevel > 0 ? 1 : 0)
-          : 0,
+          : owner.bulletBounces || 0,
+
         explosiveLevel: isPlayer ? getUpgradeStack("explosive") : 0,
         poisonLevel: isPlayer ? getUpgradeStack("poison") : 0,
         bounceExplosionLevel,
+
         enemyExplosive: !isPlayer && Boolean(owner.explosiveTrait),
         enemyExplosionRadius: !isPlayer ? owner.explosiveRadius || 54 : 0,
         enemyExplosionDamage: !isPlayer ? owner.explosiveDamage || 0 : 0,
+
+        enemyMultishot: !isPlayer && Boolean(owner.multishotTrait),
+        enemyPoison: !isPlayer && Boolean(owner.poisonTrait),
+        enemyPoisonDps: !isPlayer ? owner.poisonDps || 0 : 0,
+        enemyPoisonDuration: !isPlayer ? owner.poisonDuration || 0 : 0,
+        enemyBounce: !isPlayer && Boolean(owner.bounceTrait),
+        enemySniper: !isPlayer && Boolean(owner.sniperTrait),
+
         alive: true,
       });
     }
@@ -1261,7 +1357,16 @@
           Math.sin(angle) * (30 + Math.random() * 90) +
           (Math.random() - 0.5) * 80,
         life: 0.16 + Math.random() * 0.18,
-        color: isPlayer && multishotLevel > 0 ? "#bfe5ff" : undefined,
+        color:
+          !isPlayer && owner.poisonTrait
+            ? "#72e681"
+            : !isPlayer && owner.bounceTrait
+              ? "#78bfff"
+              : !isPlayer && owner.sniperTrait
+                ? "#d9dce3"
+                : isPlayer && multishotLevel > 0
+                  ? "#bfe5ff"
+                  : undefined,
       });
     }
   }
@@ -1421,6 +1526,24 @@
     spawnHitSparks(enemy.x, enemy.y, "#72e681", 5 + level);
   }
 
+
+  function applyEnemyPoison(bullet) {
+    if (!player.alive || !bullet.enemyPoison) return;
+
+    const now = gameNowSeconds();
+    player.enemyPoisonDps = Math.max(
+      player.enemyPoisonDps || 0,
+      bullet.enemyPoisonDps || 4
+    );
+    player.enemyPoisonUntil = Math.max(
+      player.enemyPoisonUntil || 0,
+      now + (bullet.enemyPoisonDuration || 3.2)
+    );
+    player.enemyPoisonSource = bullet.owner || null;
+
+    spawnHitSparks(player.x, player.y, "#72e681", 7);
+  }
+
   function explodeBounceBullet(bullet, x, y) {
     if (bullet.owner !== player || !bullet.bounceExplosionLevel) return;
 
@@ -1497,6 +1620,9 @@
     player.points += roundNumber * 500;
     player.hp = player.maxHp;
     player.fireCooldown = 0;
+    player.enemyPoisonUntil = 0;
+    player.enemyPoisonDps = 0;
+    player.enemyPoisonSource = null;
 
     bullets = [];
     grenades = [];
@@ -1636,6 +1762,33 @@
       const now = gameNowSeconds();
 
       if (
+        (player.enemyPoisonUntil || 0) > now &&
+        (player.enemyPoisonDps || 0) > 0
+      ) {
+        damageTank(
+          player,
+          player.enemyPoisonDps * dt,
+          player.enemyPoisonSource || null
+        );
+        if (!player.alive) return;
+
+        if (Math.random() < dt * 8) {
+          particles.push({
+            x: player.x + (Math.random() - 0.5) * 22,
+            y: player.y + (Math.random() - 0.5) * 22,
+            vx: (Math.random() - 0.5) * 28,
+            vy: -18 - Math.random() * 32,
+            life: 0.25 + Math.random() * 0.25,
+            color: "#72e681",
+            size: 2 + Math.random() * 2,
+          });
+        }
+      } else if ((player.enemyPoisonUntil || 0) <= now) {
+        player.enemyPoisonDps = 0;
+        player.enemyPoisonSource = null;
+      }
+
+      if (
         regenStacks > 0 &&
         now - player.lastHitAt >= 4 &&
         player.hp < player.maxHp
@@ -1730,13 +1883,16 @@
     }
 
     const distanceToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+    const sightRange = enemy.sniperTrait ? 460 : 360;
+    const fireRange = enemy.sniperTrait ? 440 : 320;
+
     const seesPlayer =
       player.alive &&
-      distanceToPlayer < 360 &&
+      distanceToPlayer < sightRange &&
       hasLineOfSight(enemy.x, enemy.y, player.x, player.y);
 
     if (seesPlayer) {
-      enemy.rememberPlayerUntil = now + 2.6;
+      enemy.rememberPlayerUntil = now + (enemy.sniperTrait ? 3.2 : 2.6);
       const desiredTurretAngle = Math.atan2(
         player.y - enemy.y,
         player.x - enemy.x
@@ -1744,11 +1900,18 @@
       enemy.turretAngle = turnTowardAngle(
         enemy.turretAngle,
         desiredTurretAngle,
-        5.2 * dt
+        enemy.sniperTrait ? 3.7 * dt : 5.2 * dt
       );
 
-      if (distanceToPlayer < 320) {
-        const spread = enemy.rapidTrait ? 0.11 : 0.08;
+      if (distanceToPlayer < fireRange) {
+        const spread = enemy.sniperTrait
+          ? 0.018
+          : enemy.rapidTrait
+            ? 0.11
+            : enemy.multishotTrait
+              ? 0.045
+              : 0.08;
+
         shoot(
           enemy,
           enemy.turretAngle + (Math.random() - 0.5) * spread,
@@ -1851,7 +2014,7 @@
         const ny = bullet.y + stepY;
 
         if (collidesWalls(nx, ny, BULLET_RADIUS)) {
-          if (bullet.owner === player && bullet.bouncesLeft > 0) {
+          if (bullet.bouncesLeft > 0) {
             const hitX = collidesWalls(nx, bullet.y, BULLET_RADIUS);
             const hitY = collidesWalls(bullet.x, ny, BULLET_RADIUS);
 
@@ -1887,6 +2050,7 @@
           ) {
             bullet.alive = false;
             damageTank(player, bullet.damage || 20, bullet.owner);
+            if (player.alive) applyEnemyPoison(bullet);
             explodeEnemyBullet(bullet, bullet.x, bullet.y, true);
             break;
           }
@@ -2052,17 +2216,27 @@
   function drawTank(tank, color, isPlayer = false) {
     if (!tank.alive) return;
 
+    const sniper = !isPlayer && Boolean(tank.sniperTrait);
+    const bodyColor = sniper ? "#0a0c10" : color;
+    const trackColor = sniper ? "#20242b" : "#252b35";
+
     // Body: points in movement direction.
     ctx.save();
     ctx.translate(tank.x, tank.y);
     ctx.rotate(tank.bodyAngle);
 
-    ctx.fillStyle = "#252b35";
+    ctx.fillStyle = trackColor;
     ctx.fillRect(-15, -14, 30, 5);
     ctx.fillRect(-15, 9, 30, 5);
 
-    ctx.fillStyle = color;
+    ctx.fillStyle = bodyColor;
     ctx.fillRect(-13, -11, 26, 22);
+
+    if (sniper) {
+      ctx.strokeStyle = "#626b78";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(-13, -11, 26, 22);
+    }
     ctx.restore();
 
     // Turret: rotates independently through the full 360 degrees.
@@ -2070,14 +2244,45 @@
     ctx.translate(tank.x, tank.y);
     ctx.rotate(tank.turretAngle);
 
-    ctx.fillStyle = isPlayer ? "#d8ffe6" : "#ffe2e2";
+    ctx.fillStyle = isPlayer
+      ? "#d8ffe6"
+      : sniper
+        ? "#555d69"
+        : "#ffe2e2";
     ctx.fillRect(-6, -6, 12, 12);
 
-    ctx.fillStyle = color;
-    ctx.fillRect(2, -3, 24, 6);
+    ctx.fillStyle = sniper ? "#15181e" : color;
+    const barrelLength = sniper ? 40 : 24;
+    const barrelHeight = sniper ? 5 : 6;
+    ctx.fillRect(2, -barrelHeight / 2, barrelLength, barrelHeight);
+
+    if (sniper) {
+      ctx.fillStyle = "#e35d5d";
+      ctx.fillRect(38, -3, 4, 6);
+    }
     ctx.restore();
 
-    if (!isPlayer && (tank.poisonUntil || 0) > gameNowSeconds()) {
+    const now = gameNowSeconds();
+
+    // Player poison status.
+    if (
+      isPlayer &&
+      (player.enemyPoisonUntil || 0) > now &&
+      (player.enemyPoisonDps || 0) > 0
+    ) {
+      ctx.save();
+      ctx.translate(tank.x, tank.y);
+      ctx.globalAlpha = 0.72 + Math.sin(gameNowMs() / 130) * 0.18;
+      ctx.strokeStyle = "#72e681";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, 20, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Player poison upgrade applied to an enemy.
+    if (!isPlayer && (tank.poisonUntil || 0) > now) {
       ctx.save();
       ctx.translate(tank.x, tank.y);
       const pulse = 0.72 + Math.sin(gameNowMs() / 130) * 0.18;
@@ -2090,13 +2295,24 @@
       ctx.restore();
     }
 
-    if (!isPlayer && (tank.rapidTrait || tank.explosiveTrait)) {
+    // Enemy archetype markings.
+    if (
+      !isPlayer &&
+      (
+        tank.rapidTrait ||
+        tank.explosiveTrait ||
+        tank.multishotTrait ||
+        tank.poisonTrait ||
+        tank.bounceTrait ||
+        tank.sniperTrait
+      )
+    ) {
       ctx.save();
       ctx.translate(tank.x, tank.y);
+      ctx.lineWidth = 2;
 
       if (tank.rapidTrait) {
         ctx.strokeStyle = "#ffd45d";
-        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(0, 0, 18, Math.PI * 0.15, Math.PI * 0.85);
         ctx.stroke();
@@ -2104,9 +2320,48 @@
 
       if (tank.explosiveTrait) {
         ctx.strokeStyle = "#ff9a4d";
-        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.arc(0, 0, 21, Math.PI * 1.05, Math.PI * 1.95);
+        ctx.stroke();
+      }
+
+      if (tank.multishotTrait) {
+        ctx.strokeStyle = "#7ed6ff";
+        ctx.beginPath();
+        ctx.arc(0, 0, 19, Math.PI * 0.95, Math.PI * 1.35);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, 0, 19, Math.PI * 1.65, Math.PI * 2.05);
+        ctx.stroke();
+      }
+
+      if (tank.poisonTrait) {
+        ctx.strokeStyle = "#72e681";
+        ctx.beginPath();
+        ctx.arc(0, 0, 20, Math.PI * 0.25, Math.PI * 0.75);
+        ctx.stroke();
+      }
+
+      if (tank.bounceTrait) {
+        ctx.strokeStyle = "#78bfff";
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.arc(0, 0, 21, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      if (tank.sniperTrait) {
+        ctx.strokeStyle = "#d9dce3";
+        ctx.beginPath();
+        ctx.moveTo(-22, 0);
+        ctx.lineTo(-16, 0);
+        ctx.moveTo(16, 0);
+        ctx.lineTo(22, 0);
+        ctx.moveTo(0, -22);
+        ctx.lineTo(0, -16);
+        ctx.moveTo(0, 16);
+        ctx.lineTo(0, 22);
         ctx.stroke();
       }
 
@@ -2155,6 +2410,14 @@
       ctx.fillStyle = b.explosiveLevel > 0 ? "#b9d95f" : "#72e681";
     } else if (isPlayerBullet && b.explosiveLevel > 0) {
       ctx.fillStyle = "#ffb15a";
+    } else if (!isPlayerBullet && b.enemyPoison) {
+      ctx.fillStyle = "#72e681";
+    } else if (!isPlayerBullet && b.enemyBounce) {
+      ctx.fillStyle = "#78bfff";
+    } else if (!isPlayerBullet && b.enemySniper) {
+      ctx.fillStyle = "#f1f3f6";
+    } else if (!isPlayerBullet && b.enemyMultishot) {
+      ctx.fillStyle = "#7ed6ff";
     } else if (!isPlayerBullet && b.enemyExplosive) {
       ctx.fillStyle = "#ff934d";
     } else {
@@ -2165,7 +2428,8 @@
     const bulletRadius =
       BULLET_RADIUS +
       (b.explosiveLevel > 0 ? 1 : 0) +
-      (b.enemyExplosive ? 1 : 0);
+      (b.enemyExplosive ? 1 : 0) +
+      (b.enemySniper ? 1 : 0);
     ctx.arc(b.x, b.y, bulletRadius, 0, Math.PI * 2);
     ctx.fill();
 
@@ -2174,6 +2438,26 @@
       ctx.lineWidth = b.bounceExplosionLevel > 0 ? 2 : 1;
       ctx.beginPath();
       ctx.arc(b.x, b.y, BULLET_RADIUS + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (!isPlayerBullet && b.enemyBounce && b.bouncesLeft > 0) {
+      ctx.strokeStyle = "#b9ddff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, BULLET_RADIUS + 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    if (!isPlayerBullet && b.enemySniper) {
+      const speed = Math.hypot(b.vx, b.vy) || 1;
+      const dx = b.vx / speed;
+      const dy = b.vy / speed;
+      ctx.strokeStyle = "rgba(241,243,246,0.55)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.x - dx * 11, b.y - dy * 11);
+      ctx.lineTo(b.x, b.y);
       ctx.stroke();
     }
   }
@@ -2442,14 +2726,22 @@
       statuses.push(`RAPID ${Math.ceil(player.rapidUntil - now)}s`);
     }
 
+    if ((player.enemyPoisonUntil || 0) > now) {
+      statuses.push(
+        `POISON ${Math.ceil(player.enemyPoisonUntil - now)}s`
+      );
+    }
+
     if (MODE === "infinite") {
       for (const upgrade of PERMANENT_UPGRADES) {
         const stack = getUpgradeStack(upgrade.id);
         if (stack > 0) statuses.push(`${upgrade.icon}×${stack}`);
       }
 
-      if (roundNumber >= 6) statuses.push("RAPID ENEMIES");
-      if (roundNumber >= 8) statuses.push("EXPLOSIVE ENEMIES");
+      if (roundNumber >= 6) {
+        const unlockedEnemyTypes = Math.min(6, roundNumber - 5);
+        statuses.push(`ENEMY VARIANTS ${unlockedEnemyTypes}/6`);
+      }
     }
 
     if (statuses.length) {
