@@ -5,6 +5,129 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tiny Tank Maze — Game</title>
   <link rel="stylesheet" href="style.css" />
+
+  <style id="fullscreen-v5-9-2">
+    .fullscreen-control {
+      font: inherit;
+    }
+
+    .game-shell:fullscreen,
+    .game-shell:-webkit-full-screen {
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #05070a;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: none !important;
+    }
+
+    .game-shell:fullscreen canvas,
+    .game-shell:-webkit-full-screen canvas {
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: 100vw !important;
+      max-height: 100vh !important;
+      object-fit: contain;
+      display: block;
+      cursor: none !important;
+    }
+
+    .game-shell:fullscreen *,
+    .game-shell:-webkit-full-screen * {
+      cursor: none !important;
+    }
+
+    /* v5.11: center Infinite upgrade dialog over the canvas itself. */
+    .game-shell {
+      position: relative;
+    }
+
+    #upgradePanel {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      margin: 0 !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 24px;
+      z-index: 20;
+    }
+
+    #upgradePanel.hidden {
+      display: none !important;
+    }
+
+    #upgradePanel .upgrade-panel-card {
+      position: relative !important;
+      inset: auto !important;
+      margin: 0 auto !important;
+      width: min(920px, calc(100% - 48px));
+      max-height: calc(100% - 48px);
+      overflow: auto;
+      box-sizing: border-box;
+    }
+
+    /* v5.12: reveal cursor whenever an interactive overlay is open. */
+    .game-shell.fullscreen-ui-cursor:fullscreen,
+    .game-shell.fullscreen-ui-cursor:fullscreen *,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen * {
+      cursor: auto !important;
+    }
+
+    .game-shell.fullscreen-ui-cursor:fullscreen a,
+    .game-shell.fullscreen-ui-cursor:fullscreen button,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen a,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen button {
+      cursor: pointer !important;
+    }
+
+    .game-shell.fullscreen-ui-cursor:fullscreen input,
+    .game-shell.fullscreen-ui-cursor:fullscreen textarea,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen input,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen textarea {
+      cursor: text !important;
+    }
+
+    /* v5.13: centered pause overlay. */
+    #pausePanel {
+      position: absolute !important;
+      inset: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      margin: 0 !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      padding: 24px;
+      z-index: 30;
+      background: rgba(5, 7, 10, 0.58);
+      backdrop-filter: blur(2px);
+    }
+
+    #pausePanel.hidden {
+      display: none !important;
+    }
+
+    #pausePanel .pause-panel-card {
+      position: relative !important;
+      inset: auto !important;
+      margin: 0 auto !important;
+      width: min(440px, calc(100% - 48px));
+      box-sizing: border-box;
+      text-align: center;
+    }
+  </style>
 </head>
 <body class="game-body">
   <div class="wrap">
@@ -23,9 +146,11 @@
           <span><b>Aim</b> Mouse</span>
           <span><b>Shoot</b> Click / Space</span>
           <span><b>Grenade</b> G</span>
+          <span><b>Pause</b> P</span>
           <span><b>Fullscreen</b> F</span>
         </div>
-        <button id="fullscreenBtn" class="home-link fullscreen-btn" type="button">FULLSCREEN</button>
+        <a id="pauseBtn" class="home-link" href="#" role="button">PAUSE</a>
+        <a id="fullscreenBtn" class="home-link" href="#" role="button">FULLSCREEN</a>
         <a class="home-link" href="index.html">HOME</a>
       </div>
     </div>
@@ -33,12 +158,26 @@
     <div class="game-shell">
       <canvas id="game" width="1152" height="768" tabindex="0"></canvas>
 
+
+      <section id="pausePanel" class="panel hidden" aria-hidden="true">
+        <div class="result-card pause-panel-card">
+          <div class="eyebrow">GAME PAUSED</div>
+          <h2>Take a break</h2>
+          <p>Gameplay and all gameplay timers are frozen.</p>
+          <div class="result-actions">
+            <button id="resumeBtn" class="primary-btn" type="button">RESUME</button>
+            <a href="index.html" class="secondary-btn button-link">HOME</a>
+          </div>
+          <div class="mp-small-note">Press P to resume.</div>
+        </div>
+      </section>
+
       <section id="upgradePanel" class="panel hidden">
         <div class="upgrade-panel-card">
           <div class="eyebrow">WAVE CLEARED • FULL HEALTH RESTORED</div>
-          <h2 id="upgradeTitle">Choose a permanent upgrade</h2>
+          <h2 id="upgradeTitle">Choose a permanent modification</h2>
           <p id="upgradeSubtitle">
-            Weapon and survival upgrades stack, so later choices can strengthen or combine with earlier ones.
+            Upgrades stack. Later choices can strengthen the same mod or combine with different ones.
           </p>
           <div id="upgradeChoices" class="upgrade-grid"></div>
         </div>
@@ -72,6 +211,6 @@
 
   <script src="config.js"></script>
   <script src="leaderboard.js"></script>
-  <script src="game.js?v=5.9.0"></script>
+  <script src="game.js?v=5.13.0"></script>
 </body>
 </html>

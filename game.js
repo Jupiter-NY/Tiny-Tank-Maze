@@ -21,22 +21,25 @@
   const upgradeTitle = document.getElementById("upgradeTitle");
   const modeBadge = document.getElementById("modeBadge");
   const modeSubtitle = document.getElementById("modeSubtitle");
+  const pausePanel = document.getElementById("pausePanel");
+  const pauseBtn = document.getElementById("pauseBtn");
+  const resumeBtn = document.getElementById("resumeBtn");
 
-  const gameShell = canvas.closest(".game-shell");
+  const fullscreenShell = canvas.closest(".game-shell");
   const fullscreenBtn = document.getElementById("fullscreenBtn");
 
-  function currentFullscreenElement() {
+  function getFullscreenElement() {
     return document.fullscreenElement || document.webkitFullscreenElement || null;
   }
 
-  async function enterGameFullscreen() {
-    if (!gameShell) return;
+  async function enterFullscreen() {
+    if (!fullscreenShell || getFullscreenElement()) return;
 
     try {
-      if (gameShell.requestFullscreen) {
-        await gameShell.requestFullscreen();
-      } else if (gameShell.webkitRequestFullscreen) {
-        gameShell.webkitRequestFullscreen();
+      if (fullscreenShell.requestFullscreen) {
+        await fullscreenShell.requestFullscreen();
+      } else if (fullscreenShell.webkitRequestFullscreen) {
+        fullscreenShell.webkitRequestFullscreen();
       }
       canvas.focus();
     } catch (error) {
@@ -44,7 +47,9 @@
     }
   }
 
-  async function exitGameFullscreen() {
+  async function exitFullscreen() {
+    if (!getFullscreenElement()) return;
+
     try {
       if (document.exitFullscreen) {
         await document.exitFullscreen();
@@ -56,24 +61,61 @@
     }
   }
 
-  function toggleGameFullscreen() {
-    if (currentFullscreenElement()) {
-      exitGameFullscreen();
+  function toggleFullscreen() {
+    if (getFullscreenElement()) {
+      exitFullscreen();
     } else {
-      enterGameFullscreen();
+      enterFullscreen();
     }
   }
 
-  function updateFullscreenButton() {
-    if (!fullscreenBtn) return;
-    fullscreenBtn.textContent = currentFullscreenElement()
-      ? "EXIT FULLSCREEN"
-      : "FULLSCREEN";
+  function updateFullscreenControl() {
+    if (fullscreenBtn) {
+      fullscreenBtn.textContent = getFullscreenElement()
+        ? "EXIT FULLSCREEN"
+        : "FULLSCREEN";
+    }
+    if (!getFullscreenElement()) {
+      canvas.focus();
+    }
   }
 
-  fullscreenBtn?.addEventListener("click", toggleGameFullscreen);
-  document.addEventListener("fullscreenchange", updateFullscreenButton);
-  document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+  fullscreenBtn?.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleFullscreen();
+  });
+  document.addEventListener("fullscreenchange", updateFullscreenControl);
+  document.addEventListener("webkitfullscreenchange", updateFullscreenControl);
+
+  function syncFullscreenCursor() {
+    if (!fullscreenShell) return;
+
+    const interactiveOverlayOpen =
+      !pausePanel.classList.contains("hidden") ||
+      !upgradePanel.classList.contains("hidden") ||
+      !messagePanel.classList.contains("hidden");
+
+    fullscreenShell.classList.toggle(
+      "fullscreen-ui-cursor",
+      Boolean(getFullscreenElement()) && interactiveOverlayOpen
+    );
+  }
+
+  const fullscreenPanelObserver = new MutationObserver(syncFullscreenCursor);
+  fullscreenPanelObserver.observe(upgradePanel, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  fullscreenPanelObserver.observe(messagePanel, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  fullscreenPanelObserver.observe(pausePanel, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  document.addEventListener("fullscreenchange", syncFullscreenCursor);
+  document.addEventListener("webkitfullscreenchange", syncFullscreenCursor);
 
   const W = canvas.width;
   const H = canvas.height;
@@ -88,6 +130,7 @@
   const GRENADE_RADIUS = 6;
   const GRENADE_BLAST_RADIUS = 108;
   const GRENADE_FUSE = 1.25;
+  const KILL_STREAK_WINDOW = 4.0;
 
   const PICKUP_SPAWN_MIN = 6.5;
   const PICKUP_SPAWN_MAX = 12.0;
@@ -97,6 +140,9 @@
   const mouse = { x: W / 2, y: H / 2, down: false };
 
   let running = false;
+  let paused = false;
+  let pauseStartedRealMs = 0;
+  let totalPausedMs = 0;
   let lastTime = 0;
   let maze = [];
   let wallRects = [];
@@ -113,6 +159,78 @@
   let currentPlayerName = "Player";
   let pickupSpawnTimer = 0;
   let waveTransitioning = false;
+
+  function gameNowMs() {
+    const realNow = paused ? pauseStartedRealMs : performance.now();
+    return realNow - totalPausedMs;
+  }
+
+  function gameNowSeconds() {
+    return gameNowMs() / 1000;
+  }
+
+  function clearGameplayInputs() {
+    mouse.down = false;
+    for (const key of Object.keys(keys)) {
+      keys[key] = false;
+    }
+  }
+
+  function pauseGame() {
+    if (!running || paused || waveTransitioning || !player?.alive) return;
+
+    paused = true;
+    pauseStartedRealMs = performance.now();
+    clearGameplayInputs();
+    pausePanel.classList.remove("hidden");
+    pausePanel.setAttribute("aria-hidden", "false");
+    syncFullscreenCursor();
+    resumeBtn?.focus();
+  }
+
+  function resumeGame() {
+    if (!paused) return;
+
+    const realNow = performance.now();
+    totalPausedMs += Math.max(0, realNow - pauseStartedRealMs);
+    pauseStartedRealMs = 0;
+    paused = false;
+    pausePanel.classList.add("hidden");
+    pausePanel.setAttribute("aria-hidden", "true");
+    lastTime = realNow;
+    syncFullscreenCursor();
+    canvas.focus();
+  }
+
+  function togglePause() {
+    if (paused) {
+      resumeGame();
+    } else {
+      pauseGame();
+    }
+  }
+
+  pauseBtn?.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePause();
+  });
+  resumeBtn?.addEventListener("click", resumeGame);
+
+  // Lightweight celebration layers. These update even while gameplay is paused
+  // at the Infinite upgrade screen, so wave clears still feel alive.
+  let confetti = [];
+  let floatingTexts = [];
+  let waveBanner = null;
+  let celebrationFlash = 0;
+  const CONFETTI_COLORS = [
+    "#ffd54f",
+    "#67b7ff",
+    "#ff75bc",
+    "#52d681",
+    "#ff9a4d",
+    "#b6aaff",
+    "#f4f7fb",
+  ];
 
   const CLASSIC_SCORE_KEY = "tinyTankMazeHighScoresV3";
   const LEGACY_HIGH_SCORE_KEY = "tinyTankMazeHighScoresV2";
@@ -166,6 +284,27 @@
       icon: "+",
       name: "Repair Nanobots",
       description: "Slowly regenerate health after you avoid damage for a few seconds. Stacks increase the rate.",
+    },
+    {
+      id: "multishot",
+      icon: "M",
+      name: "Multi Shot",
+      maxStack: 3,
+      description: "Fire paired side shots with every trigger pull. Stacks grow the volley from 3 to 5 to 7 bullets.",
+    },
+    {
+      id: "poison",
+      icon: "☣",
+      name: "Poison Shot",
+      maxStack: 5,
+      description: "Hits poison surviving enemies for damage over time. More stacks make the toxin much stronger.",
+    },
+    {
+      id: "bounceblast",
+      icon: "X",
+      name: "Bounce Explosions",
+      maxStack: 5,
+      description: "Gain one bonus wall bounce, and every ricochet detonates a small blast. Stacks strengthen each blast.",
     },
   ];
 
@@ -368,6 +507,23 @@
       return `${(nextStack * 1.2).toFixed(1)} HP/sec after 4s without damage`;
     }
 
+    if (id === "multishot") {
+      const bulletsPerVolley = 1 + Math.min(3, nextStack) * 2;
+      const spread = 5 + Math.min(3, nextStack) * 4;
+      return `${bulletsPerVolley} bullets per volley • ±${spread}° spread`;
+    }
+
+    if (id === "poison") {
+      const dps = 4 + Math.min(5, nextStack) * 4;
+      return `${dps} poison damage/sec for 4s`;
+    }
+
+    if (id === "bounceblast") {
+      const radius = 34 + Math.min(5, nextStack) * 8;
+      const damage = 6 + Math.min(5, nextStack) * 5;
+      return `+1 bonus bounce • ${radius}px / ${damage} damage blast on bounce`;
+    }
+
     return "";
   }
 
@@ -384,7 +540,9 @@
   }
 
   function chooseUpgradeSet(count = 3) {
-    const pool = PERMANENT_UPGRADES.slice();
+    const pool = PERMANENT_UPGRADES.filter((upgrade) =>
+      !upgrade.maxStack || getUpgradeStack(upgrade.id) < upgrade.maxStack
+    );
 
     for (let i = pool.length - 1; i > 0; i--) {
       const j = randInt(i + 1);
@@ -430,7 +588,22 @@
   function applyWaveUpgrade(id) {
     if (!waveTransitioning || MODE !== "infinite") return;
 
+    const upgrade = getUpgradeById(id);
+    if (!upgrade) return;
+    if (upgrade.maxStack && getUpgradeStack(id) >= upgrade.maxStack) return;
+
     player.mods[id] = getUpgradeStack(id) + 1;
+
+    floatingTexts.push({
+      x: W / 2,
+      y: 110,
+      text: `${upgrade.name.toUpperCase()} ×${getUpgradeStack(id)}`,
+      color: "#fff1a8",
+      life: 1.4,
+      maxLife: 1.4,
+      vy: -18,
+      scale: 1.2,
+    });
 
     if (id === "maxhp") {
       player.maxHp = 100 + getUpgradeStack("maxhp") * 25;
@@ -794,6 +967,8 @@
       grenades: 3,
       score: 0,
       points: 0,
+      killStreak: 0,
+      lastKillAt: -Infinity,
       mods: {
         rapid: 0,
         velocity: 0,
@@ -802,6 +977,9 @@
         damage: 0,
         maxhp: 0,
         regen: 0,
+        multishot: 0,
+        poison: 0,
+        bounceblast: 0,
       },
       lastHitAt: -Infinity,
       alive: true,
@@ -916,7 +1094,7 @@
   }
 
   function getCurrentVisionRadius() {
-    return performance.now() / 1000 < player.visionUntil
+    return gameNowSeconds() < player.visionUntil
       ? player.visionRadius * 1.55
       : player.visionRadius;
   }
@@ -1010,7 +1188,7 @@
 
   function shoot(owner, angle, speed = 370) {
     const isPlayer = owner === player;
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
 
     if (owner.fireCooldown > 0 || !owner.alive) return;
 
@@ -1032,25 +1210,47 @@
       : owner.bulletSpeed || speed;
 
     const muzzle = 22;
-    bullets.push({
-      x: owner.x + Math.cos(angle) * muzzle,
-      y: owner.y + Math.sin(angle) * muzzle,
-      vx: Math.cos(angle) * bulletSpeed,
-      vy: Math.sin(angle) * bulletSpeed,
-      owner,
-      life: isPlayer ? 2.8 : 2.2,
-      damage: isPlayer
-        ? 30 + getUpgradeStack("damage") * 8
-        : owner.bulletDamage || 20,
-      bouncesLeft: isPlayer ? getUpgradeStack("ricochet") : 0,
-      explosiveLevel: isPlayer ? getUpgradeStack("explosive") : 0,
-      enemyExplosive: !isPlayer && Boolean(owner.explosiveTrait),
-      enemyExplosionRadius: !isPlayer ? owner.explosiveRadius || 54 : 0,
-      enemyExplosionDamage: !isPlayer ? owner.explosiveDamage || 0 : 0,
-      alive: true,
-    });
+    const baseDamage = isPlayer
+      ? 30 + getUpgradeStack("damage") * 8
+      : owner.bulletDamage || 20;
 
-    for (let i = 0; i < 5; i++) {
+    const multishotLevel = isPlayer ? Math.min(3, getUpgradeStack("multishot")) : 0;
+    const pelletCount = isPlayer ? 1 + multishotLevel * 2 : 1;
+    const spreadStep = multishotLevel > 0
+      ? ((4 + multishotLevel * 1.5) * Math.PI) / 180
+      : 0;
+
+    for (let pellet = 0; pellet < pelletCount; pellet++) {
+      const offsetIndex = pellet - (pelletCount - 1) / 2;
+      const shotAngle = angle + offsetIndex * spreadStep;
+      const isCenterPellet = Math.abs(offsetIndex) < 0.01;
+      const pelletDamage = isPlayer && !isCenterPellet
+        ? Math.round(baseDamage * 0.82)
+        : baseDamage;
+      const bounceExplosionLevel = isPlayer ? getUpgradeStack("bounceblast") : 0;
+
+      bullets.push({
+        x: owner.x + Math.cos(shotAngle) * muzzle,
+        y: owner.y + Math.sin(shotAngle) * muzzle,
+        vx: Math.cos(shotAngle) * bulletSpeed,
+        vy: Math.sin(shotAngle) * bulletSpeed,
+        owner,
+        life: isPlayer ? 2.8 : 2.2,
+        damage: pelletDamage,
+        bouncesLeft: isPlayer
+          ? getUpgradeStack("ricochet") + (bounceExplosionLevel > 0 ? 1 : 0)
+          : 0,
+        explosiveLevel: isPlayer ? getUpgradeStack("explosive") : 0,
+        poisonLevel: isPlayer ? getUpgradeStack("poison") : 0,
+        bounceExplosionLevel,
+        enemyExplosive: !isPlayer && Boolean(owner.explosiveTrait),
+        enemyExplosionRadius: !isPlayer ? owner.explosiveRadius || 54 : 0,
+        enemyExplosionDamage: !isPlayer ? owner.explosiveDamage || 0 : 0,
+        alive: true,
+      });
+    }
+
+    for (let i = 0; i < 5 + multishotLevel * 2; i++) {
       particles.push({
         x: owner.x + Math.cos(angle) * muzzle,
         y: owner.y + Math.sin(angle) * muzzle,
@@ -1061,6 +1261,7 @@
           Math.sin(angle) * (30 + Math.random() * 90) +
           (Math.random() - 0.5) * 80,
         life: 0.16 + Math.random() * 0.18,
+        color: isPlayer && multishotLevel > 0 ? "#bfe5ff" : undefined,
       });
     }
   }
@@ -1175,6 +1376,8 @@
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
         life: 0.18 + Math.random() * 0.45,
+        color: "#ffb15a",
+        size: 3 + Math.random() * 2,
       });
     }
 
@@ -1186,6 +1389,63 @@
         distance <= radius &&
         hasLineOfSight(x, y, enemy.x, enemy.y)
       ) {
+        damageTank(enemy, damage, player);
+      }
+    }
+  }
+
+  function spawnHitSparks(x, y, color = "#f4f7fb", count = 7) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 40 + Math.random() * 150;
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.12 + Math.random() * 0.22,
+        color,
+        size: 2 + Math.random() * 3,
+      });
+    }
+  }
+
+  function applyPoison(enemy, bullet) {
+    if (!enemy.alive || bullet.owner !== player || !bullet.poisonLevel) return;
+
+    const level = Math.min(5, bullet.poisonLevel);
+    const now = gameNowSeconds();
+    enemy.poisonDps = Math.max(enemy.poisonDps || 0, 4 + level * 4);
+    enemy.poisonUntil = Math.max(enemy.poisonUntil || 0, now + 4);
+
+    spawnHitSparks(enemy.x, enemy.y, "#72e681", 5 + level);
+  }
+
+  function explodeBounceBullet(bullet, x, y) {
+    if (bullet.owner !== player || !bullet.bounceExplosionLevel) return;
+
+    const level = Math.min(5, bullet.bounceExplosionLevel);
+    const radius = 34 + level * 8;
+    const damage = 6 + level * 5;
+
+    for (let i = 0; i < 12 + level * 3; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 35 + Math.random() * (95 + level * 12);
+      particles.push({
+        x,
+        y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0.16 + Math.random() * 0.34,
+        color: "#9fd9ff",
+        size: 2 + Math.random() * 3,
+      });
+    }
+
+    for (const enemy of enemies) {
+      if (!enemy.alive) continue;
+      const distance = Math.hypot(enemy.x - x, enemy.y - y);
+      if (distance <= radius && hasLineOfSight(x, y, enemy.x, enemy.y)) {
         damageTank(enemy, damage, player);
       }
     }
@@ -1246,15 +1506,83 @@
       keys[key] = false;
     }
 
+    spawnWaveClearCelebration();
     renderUpgradeChoices();
-    upgradePanel.classList.remove("hidden");
+
+    // Give the clear itself a short beat before immediately asking the player
+    // to make another decision.
+    setTimeout(() => {
+      if (waveTransitioning && MODE === "infinite" && player?.alive) {
+        upgradePanel.classList.remove("hidden");
+      }
+    }, 650);
+  }
+
+  function resetKillStreak(showFeedback = false) {
+    if (!player || player.killStreak <= 0) return;
+
+    const lostStreak = player.killStreak;
+    player.killStreak = 0;
+    player.lastKillAt = -Infinity;
+
+    if (showFeedback && lostStreak >= 2) {
+      floatingTexts.push({
+        x: player.x,
+        y: player.y - 34,
+        text: "STREAK LOST",
+        color: "#ff8c8c",
+        life: 0.75,
+        maxLife: 0.75,
+        vy: -24,
+        scale: 0.9,
+      });
+    }
+  }
+
+  function awardKillStreakPoints(enemy) {
+    const now = gameNowSeconds();
+
+    if (now - player.lastKillAt <= KILL_STREAK_WINDOW) {
+      player.killStreak += 1;
+    } else {
+      player.killStreak = 1;
+    }
+
+    player.lastKillAt = now;
+
+    const points = player.killStreak * 100;
+    player.points += points;
+
+    floatingTexts.push({
+      x: enemy.x,
+      y: enemy.y - 20,
+      text:
+        player.killStreak > 1
+          ? `${player.killStreak}× STREAK  +${points}`
+          : `+${points}`,
+      color: player.killStreak >= 3 ? "#fff1a8" : "#ffd76a",
+      life: 1.0,
+      maxLife: 1.0,
+      vy: -34,
+      scale: Math.min(1.35, 1 + (player.killStreak - 1) * 0.06),
+    });
+  }
+
+  function updateKillStreakTimer() {
+    if (!player || player.killStreak <= 0) return;
+
+    const now = gameNowSeconds();
+    if (now - player.lastKillAt > KILL_STREAK_WINDOW) {
+      resetKillStreak(false);
+    }
   }
 
   function damageTank(tank, amount, attacker) {
     if (!tank.alive) return;
 
     if (tank === player && amount > 0) {
-      player.lastHitAt = performance.now() / 1000;
+      player.lastHitAt = gameNowSeconds();
+      resetKillStreak(true);
     }
 
     tank.hp -= amount;
@@ -1274,7 +1602,7 @@
 
       if (attacker === player && tank !== player) {
         player.score++;
-        player.points += 100;
+        awardKillStreakPoints(tank);
       }
 
       if (tank === player) {
@@ -1286,7 +1614,7 @@
   }
 
   function activateEnemyPing() {
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
 
     pingMarkers = enemies
       .filter((enemy) => enemy.alive)
@@ -1300,11 +1628,12 @@
   function updatePlayer(dt) {
     if (!player.alive) return;
 
+    updateKillStreakTimer();
     player.fireCooldown = Math.max(0, player.fireCooldown - dt);
 
     if (MODE === "infinite") {
       const regenStacks = getUpgradeStack("regen");
-      const now = performance.now() / 1000;
+      const now = gameNowSeconds();
 
       if (
         regenStacks > 0 &&
@@ -1359,7 +1688,7 @@
       if (!pickup.alive) continue;
       if (dist2(player.x, player.y, pickup.x, pickup.y) < 25 * 25) {
         pickup.alive = false;
-        const now = performance.now() / 1000;
+        const now = gameNowSeconds();
 
         if (pickup.type === "vision") player.visionUntil = now + 10;
         if (pickup.type === "rapid") player.rapidUntil = now + 8;
@@ -1379,7 +1708,27 @@
     enemy.fireCooldown = Math.max(0, enemy.fireCooldown - dt);
     enemy.pathTimer -= dt;
 
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
+
+    if ((enemy.poisonUntil || 0) > now && (enemy.poisonDps || 0) > 0) {
+      damageTank(enemy, enemy.poisonDps * dt, player);
+      if (!enemy.alive) return;
+
+      if (Math.random() < dt * 7) {
+        particles.push({
+          x: enemy.x + (Math.random() - 0.5) * 22,
+          y: enemy.y + (Math.random() - 0.5) * 22,
+          vx: (Math.random() - 0.5) * 25,
+          vy: -20 - Math.random() * 35,
+          life: 0.28 + Math.random() * 0.25,
+          color: "#72e681",
+          size: 2 + Math.random() * 2,
+        });
+      }
+    } else if ((enemy.poisonUntil || 0) <= now) {
+      enemy.poisonDps = 0;
+    }
+
     const distanceToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
     const seesPlayer =
       player.alive &&
@@ -1516,6 +1865,7 @@
             }
 
             bullet.bouncesLeft--;
+            explodeBounceBullet(bullet, bullet.x, bullet.y);
             bullet.x += Math.sign(bullet.vx) * 1.5;
             bullet.y += Math.sign(bullet.vy) * 1.5;
             continue;
@@ -1551,6 +1901,13 @@
               (PLAYER_RADIUS + BULLET_RADIUS) ** 2
             ) {
               damageTank(enemy, bullet.damage || 30, player);
+              if (enemy.alive) applyPoison(enemy, bullet);
+              spawnHitSparks(
+                bullet.x,
+                bullet.y,
+                bullet.poisonLevel > 0 ? "#72e681" : "#f4f7fb",
+                bullet.explosiveLevel > 0 ? 10 : 6
+              );
               explodePlayerBullet(bullet, bullet.x, bullet.y);
               bullet.alive = false;
               break;
@@ -1564,7 +1921,7 @@
   }
 
   function updatePingMarkers() {
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
     pingMarkers = pingMarkers.filter((marker) => marker.expiresAt > now);
   }
 
@@ -1579,11 +1936,71 @@
     }
   }
 
+  function spawnWaveClearCelebration() {
+    const bonus = roundNumber * 500;
+    celebrationFlash = 0.18;
+    waveBanner = {
+      title: `WAVE ${roundNumber} CLEARED!`,
+      subtitle: `+${bonus} BONUS  •  FULL REPAIR`,
+      life: 1.75,
+      maxLife: 1.75,
+    };
+
+    for (let i = 0; i < 120; i++) {
+      const fromLeft = i % 2 === 0;
+      const x = fromLeft ? 12 + Math.random() * 90 : W - 12 - Math.random() * 90;
+      const y = H * (0.62 + Math.random() * 0.30);
+      const inward = fromLeft ? 1 : -1;
+
+      confetti.push({
+        x,
+        y,
+        vx: inward * (80 + Math.random() * 260) + (Math.random() - 0.5) * 60,
+        vy: -180 - Math.random() * 330,
+        gravity: 360 + Math.random() * 160,
+        rotation: Math.random() * Math.PI * 2,
+        vr: (Math.random() - 0.5) * 12,
+        width: 4 + Math.random() * 6,
+        height: 7 + Math.random() * 8,
+        color: CONFETTI_COLORS[randInt(CONFETTI_COLORS.length)],
+        life: 2.2 + Math.random() * 1.2,
+      });
+    }
+  }
+
+  function updateCelebration(dt) {
+    celebrationFlash = Math.max(0, celebrationFlash - dt * 0.55);
+
+    if (waveBanner) {
+      waveBanner.life -= dt;
+      if (waveBanner.life <= 0) waveBanner = null;
+    }
+
+    for (const piece of confetti) {
+      piece.life -= dt;
+      piece.x += piece.vx * dt;
+      piece.y += piece.vy * dt;
+      piece.vy += piece.gravity * dt;
+      piece.vx *= Math.pow(0.35, dt);
+      piece.rotation += piece.vr * dt;
+    }
+    confetti = confetti.filter((piece) =>
+      piece.life > 0 && piece.y < H + 70 && piece.x > -80 && piece.x < W + 80
+    );
+
+    for (const text of floatingTexts) {
+      text.life -= dt;
+      text.y += (text.vy || -25) * dt;
+    }
+    floatingTexts = floatingTexts.filter((text) => text.life > 0);
+  }
+
   function updateParticles(dt) {
     for (const p of particles) {
       p.life -= dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      if (p.gravity) p.vy += p.gravity * dt;
       p.vx *= 0.96;
       p.vy *= 0.96;
     }
@@ -1591,7 +2008,7 @@
   }
 
   function update(dt) {
-    if (!running) return;
+    if (!running || paused) return;
 
     updatePlayer(dt);
 
@@ -1660,6 +2077,19 @@
     ctx.fillRect(2, -3, 24, 6);
     ctx.restore();
 
+    if (!isPlayer && (tank.poisonUntil || 0) > gameNowSeconds()) {
+      ctx.save();
+      ctx.translate(tank.x, tank.y);
+      const pulse = 0.72 + Math.sin(gameNowMs() / 130) * 0.18;
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = "#72e681";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, 19, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (!isPlayer && (tank.rapidTrait || tank.explosiveTrait)) {
       ctx.save();
       ctx.translate(tank.x, tank.y);
@@ -1721,7 +2151,9 @@
   function drawBullet(b) {
     const isPlayerBullet = b.owner === player;
 
-    if (isPlayerBullet && b.explosiveLevel > 0) {
+    if (isPlayerBullet && b.poisonLevel > 0) {
+      ctx.fillStyle = b.explosiveLevel > 0 ? "#b9d95f" : "#72e681";
+    } else if (isPlayerBullet && b.explosiveLevel > 0) {
       ctx.fillStyle = "#ffb15a";
     } else if (!isPlayerBullet && b.enemyExplosive) {
       ctx.fillStyle = "#ff934d";
@@ -1738,8 +2170,8 @@
     ctx.fill();
 
     if (isPlayerBullet && b.bouncesLeft > 0) {
-      ctx.strokeStyle = "#9ed7ff";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = b.bounceExplosionLevel > 0 ? "#c6eaff" : "#9ed7ff";
+      ctx.lineWidth = b.bounceExplosionLevel > 0 ? 2 : 1;
       ctx.beginPath();
       ctx.arc(b.x, b.y, BULLET_RADIUS + 3, 0, Math.PI * 2);
       ctx.stroke();
@@ -1774,7 +2206,7 @@
   function drawPingMarkers() {
     if (!pingMarkers.length) return;
 
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
     ctx.save();
 
     for (const marker of pingMarkers) {
@@ -1801,12 +2233,71 @@
   }
 
   function drawParticles() {
-    ctx.fillStyle = "#f2c96d";
     for (const p of particles) {
+      const size = p.size || 4;
       ctx.globalAlpha = clamp(p.life * 2, 0, 1);
-      ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+      ctx.fillStyle = p.color || "#f2c96d";
+      ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
     }
     ctx.globalAlpha = 1;
+  }
+
+  function drawCelebration() {
+    ctx.save();
+
+    if (celebrationFlash > 0) {
+      ctx.globalAlpha = celebrationFlash;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    for (const piece of confetti) {
+      ctx.save();
+      ctx.globalAlpha = clamp(piece.life / 0.7, 0, 1);
+      ctx.translate(piece.x, piece.y);
+      ctx.rotate(piece.rotation);
+      ctx.fillStyle = piece.color;
+      ctx.fillRect(-piece.width / 2, -piece.height / 2, piece.width, piece.height);
+      ctx.restore();
+    }
+
+    for (const text of floatingTexts) {
+      const alpha = clamp(text.life / Math.min(0.35, text.maxLife || 1), 0, 1);
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `900 ${Math.round(16 * (text.scale || 1))}px system-ui`;
+      ctx.fillStyle = text.color || "#ffffff";
+      ctx.strokeStyle = "rgba(0,0,0,.75)";
+      ctx.lineWidth = 4;
+      ctx.strokeText(text.text, text.x, text.y);
+      ctx.fillText(text.text, text.x, text.y);
+    }
+
+    if (waveBanner) {
+      const age = waveBanner.maxLife - waveBanner.life;
+      const fadeIn = clamp(age / 0.14, 0, 1);
+      const fadeOut = clamp(waveBanner.life / 0.38, 0, 1);
+      const alpha = Math.min(fadeIn, fadeOut);
+      const pop = 1 + Math.max(0, 0.18 - age) * 1.1;
+
+      ctx.globalAlpha = alpha;
+      ctx.translate(W / 2, 104);
+      ctx.scale(pop, pop);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "1000 34px system-ui";
+      ctx.strokeStyle = "rgba(0,0,0,.8)";
+      ctx.lineWidth = 7;
+      ctx.strokeText(waveBanner.title, 0, 0);
+      ctx.fillStyle = "#fff5bf";
+      ctx.fillText(waveBanner.title, 0, 0);
+      ctx.font = "800 14px system-ui";
+      ctx.fillStyle = "#dce6f5";
+      ctx.fillText(waveBanner.subtitle, 0, 30);
+    }
+
+    ctx.restore();
   }
 
   function traceVisibilityPath(targetCtx, points) {
@@ -1920,8 +2411,7 @@
       x += width + 7;
     }
 
-    const scoreValue =
-      MODE === "infinite" ? player.points : player.score * 100;
+    const scoreValue = player.points;
     const scoreText = `${scoreValue.toLocaleString()} PTS`;
     const scoreWidth = ctx.measureText(scoreText).width + 24;
 
@@ -1931,8 +2421,18 @@
     ctx.textAlign = "center";
     ctx.fillText(scoreText, W - scoreWidth / 2 - 16, 31);
 
-    const now = performance.now() / 1000;
+    const now = gameNowSeconds();
     const statuses = [];
+
+    if (player.killStreak > 1) {
+      const streakTimeLeft = Math.max(
+        0,
+        KILL_STREAK_WINDOW - (now - player.lastKillAt)
+      );
+      statuses.push(
+        `STREAK ×${player.killStreak}  ${streakTimeLeft.toFixed(1)}s`
+      );
+    }
 
     if (now < player.visionUntil) {
       statuses.push(`VISION ${Math.ceil(player.visionUntil - now)}s`);
@@ -2032,12 +2532,17 @@
       ctx.lineTo(mouse.x, mouse.y + 12);
       ctx.stroke();
     }
+
+    drawCelebration();
   }
 
   function frame(time) {
     const dt = Math.min((time - lastTime) / 1000 || 0, 0.033);
     lastTime = time;
 
+    if (!paused) {
+      updateCelebration(dt);
+    }
     update(dt);
     draw();
     requestAnimationFrame(frame);
@@ -2052,12 +2557,21 @@
     }
 
     roundNumber = 1;
-    runStartedAt = performance.now();
+    paused = false;
+    pauseStartedRealMs = 0;
+    totalPausedMs = 0;
+    runStartedAt = gameNowMs();
     running = true;
     waveTransitioning = false;
+    confetti = [];
+    floatingTexts = [];
+    waveBanner = null;
+    celebrationFlash = 0;
 
     messagePanel.classList.add("hidden");
     upgradePanel.classList.add("hidden");
+    pausePanel.classList.add("hidden");
+    pausePanel.setAttribute("aria-hidden", "true");
 
     modeBadge.textContent = MODE === "infinite" ? "INFINITE" : "CLASSIC";
     modeSubtitle.textContent =
@@ -2074,8 +2588,8 @@
       return Math.max(0, Math.round(player.points));
     }
 
-    const elapsed = Math.max(0, (performance.now() - runStartedAt) / 1000);
-    const killPoints = player.score * 100;
+    const elapsed = Math.max(0, (gameNowMs() - runStartedAt) / 1000);
+    const killPoints = player.points;
     const clearBonus = won ? 750 : 0;
     const hpBonus = won ? Math.floor(Math.max(0, player.hp) * 2) : 0;
     const speedBonus = won ? Math.floor(Math.max(0, 120 - elapsed) * 4) : 0;
@@ -2087,8 +2601,12 @@
     if (!player || (!running && !waveTransitioning)) return;
 
     running = false;
+    paused = false;
+    pauseStartedRealMs = 0;
     waveTransitioning = false;
     mouse.down = false;
+    pausePanel.classList.add("hidden");
+    pausePanel.setAttribute("aria-hidden", "true");
 
     for (const key of Object.keys(keys)) {
       keys[key] = false;
@@ -2167,10 +2685,18 @@
     const key = e.key.toLowerCase();
 
     if (key === "f" && !e.repeat) {
-      toggleGameFullscreen();
+      toggleFullscreen();
       e.preventDefault();
       return;
     }
+
+    if (key === "p" && !e.repeat) {
+      togglePause();
+      e.preventDefault();
+      return;
+    }
+
+    if (paused) return;
 
     // Only activate gameplay controls while a round is actually running.
     if (!running) return;
@@ -2198,11 +2724,18 @@
 
   window.addEventListener("mousemove", getMousePosition);
   canvas.addEventListener("mousedown", (e) => {
+    if (paused) return;
     getMousePosition(e);
     mouse.down = true;
   });
   window.addEventListener("mouseup", () => {
     mouse.down = false;
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && running && !paused && !waveTransitioning) {
+      pauseGame();
+    }
   });
 
   restartBtn.addEventListener("click", startGame);
