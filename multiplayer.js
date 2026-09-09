@@ -29,12 +29,65 @@
   const winnerTitle = document.getElementById("winnerTitle");
   const winnerText = document.getElementById("winnerText");
 
+  const gameShell = canvas.closest(".game-shell");
+  const fullscreenBtn = document.getElementById("mpFullscreenBtn");
+
+  function currentFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  async function enterGameFullscreen() {
+    if (!gameShell) return;
+
+    try {
+      if (gameShell.requestFullscreen) {
+        await gameShell.requestFullscreen();
+      } else if (gameShell.webkitRequestFullscreen) {
+        gameShell.webkitRequestFullscreen();
+      }
+      canvas.focus();
+    } catch (error) {
+      console.warn("Fullscreen request failed:", error);
+    }
+  }
+
+  async function exitGameFullscreen() {
+    try {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    } catch (error) {
+      console.warn("Fullscreen exit failed:", error);
+    }
+  }
+
+  function toggleGameFullscreen() {
+    if (currentFullscreenElement()) {
+      exitGameFullscreen();
+    } else {
+      enterGameFullscreen();
+    }
+  }
+
+  function updateFullscreenButton() {
+    if (!fullscreenBtn) return;
+    fullscreenBtn.textContent = currentFullscreenElement()
+      ? "EXIT FULLSCREEN"
+      : "FULLSCREEN";
+  }
+
+  fullscreenBtn?.addEventListener("click", toggleGameFullscreen);
+  document.addEventListener("fullscreenchange", updateFullscreenButton);
+  document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+
   const W = canvas.width, H = canvas.height;
   const COLS = 18, ROWS = 12, CELL = 64, WALL = 8;
   const BASE_VISION = 235;
   const PLAYER_NAME_KEY = "tinyTankMazePlayerName";
   const serverUrl = String(window.TANK_CONFIG?.multiplayerServer || "").trim();
-  const CLIENT_VERSION = "5.8.2";
+  const CLIENT_VERSION = "5.9.0";
 
   let lastRenderErrorText = "";
   let lastRenderErrorAt = 0;
@@ -102,60 +155,6 @@
       : `Connected • ${Math.round(pingMs)} ms ping • ${Math.round(interpolationDelayMs)} ms smoothing`;
   }
 
-  function returnToRoomEntryAfterDisconnect() {
-    const wasPlaying = roomState === "playing";
-    if (roomCode) roomInput.value = roomCode;
-    myId = null;
-    roomCode = null;
-    hostId = null;
-    roomState = "none";
-    lobby = [];
-    ready = false;
-    connectingAction = null;
-    maze = [];
-    wallRects = [];
-    wallSegments = [];
-    state = null;
-    localVisual = null;
-    renderPlayers.clear();
-    remoteHistories.clear();
-    for (const key of Object.keys(keys)) keys[key] = false;
-    mouse.down = false;
-    pendingClientState = null;
-    pendingFire = false;
-    nextClientStateSeq = 1;
-    lastClientStateSentAt = 0;
-    pingMs = null;
-    lastPingSentAt = 0;
-    serverClockOffsetMs = 0;
-    hasClockSync = false;
-    jitterMs = 0;
-    interpolationDelayMs = 100;
-    previousSnapshotArrival = null;
-    previousSnapshotServerTime = null;
-    lastFrame = performance.now();
-    lastRenderErrorText = "";
-    lastRenderErrorAt = 0;
-
-    lobbyPlayers.replaceChildren();
-    lobbyMessage.textContent = "";
-    roomCodeLabel.textContent = "-----";
-    readyBtn.textContent = "READY";
-    startBtn.disabled = true;
-    startBtn.classList.add("hidden");
-    playAgainBtn.classList.add("hidden");
-    winnerTitle.textContent = "Winner";
-    winnerText.textContent = "";
-    lobbyPanel.classList.add("hidden");
-    roundPanel.classList.add("hidden");
-    joinPanel.classList.remove("hidden");
-    createBtn.disabled = false;
-    joinBtn.disabled = false;
-    connectionStatus.textContent = "Disconnected from multiplayer server";
-    showError("Disconnected. Create or join a room to reconnect." +
-      (wasPlaying ? " An ongoing match cannot be rejoined." : ""));
-  }
-
   function connectThen(action) {
     showError("");
     if (!configured()) {
@@ -170,10 +169,8 @@
     connectionStatus.textContent = "Connecting to multiplayer server…";
     createBtn.disabled = true;
     joinBtn.disabled = true;
-    const connection = new WebSocket(serverUrl);
-    socket = connection;
-    connection.addEventListener("open", () => {
-      if (socket !== connection) return;
+    socket = new WebSocket(serverUrl);
+    socket.addEventListener("open", () => {
       pingMs = null;
       updateConnectionStatus();
       lastPingSentAt = Date.now();
@@ -182,20 +179,19 @@
       joinBtn.disabled = false;
       if (connectingAction) { const fn = connectingAction; connectingAction = null; fn(); }
     });
-    connection.addEventListener("message", (event) => {
-      if (socket !== connection) return;
+    socket.addEventListener("message", (event) => {
       try { handleMessage(JSON.parse(event.data)); }
       catch (err) { console.error("Bad server message", err); }
     });
-    connection.addEventListener("close", () => {
-      if (socket !== connection) return;
-      socket = null;
-      returnToRoomEntryAfterDisconnect();
+    socket.addEventListener("close", () => {
+      connectionStatus.textContent = "Disconnected from multiplayer server";
+      createBtn.disabled = false;
+      joinBtn.disabled = false;
+      if (roomState === "playing") showError("Connection lost. Return to the lobby and reconnect.");
+      roomState = "none";
+      state = null;
     });
-    connection.addEventListener("error", () => {
-      if (socket !== connection) return;
-      showError("Could not connect to the multiplayer server.");
-    });
+    socket.addEventListener("error", () => showError("Could not connect to the multiplayer server."));
   }
 
   function createRoom() {
@@ -321,9 +317,7 @@
       mouse.down = false;
       keys.shooting = false;
       sendClientState({ force: true });
-      winnerTitle.textContent = message.winnerId == null
-        ? "Draw"
-        : message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
+      winnerTitle.textContent = message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
       const me = state?.self;
       winnerText.textContent = `Your kills: ${me?.kills || 0}. The host can start another match in the same room.`;
       playAgainBtn.classList.toggle("hidden", hostId !== myId);
@@ -677,12 +671,7 @@
 
     angles.sort((a, b) => a - b);
 
-    let previousAngle;
     for (const angle of angles) {
-      // Shared endpoints and collinear corners can produce identical rays.
-      // Trace each exact angle once; keep nearby but distinct corner rays.
-      if (angle === previousAngle) continue;
-      previousAngle = angle;
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
       let distance = radius;
@@ -1009,8 +998,15 @@
 
   window.addEventListener("keydown", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    if (roomState !== "playing") return;
     const k = e.key.toLowerCase();
+
+    if (k === "f" && !e.repeat) {
+      toggleGameFullscreen();
+      e.preventDefault();
+      return;
+    }
+
+    if (roomState !== "playing") return;
     if (k === "w" || k === "arrowup") keys.up = true;
     if (k === "s" || k === "arrowdown") keys.down = true;
     if (k === "a" || k === "arrowleft") keys.left = true;

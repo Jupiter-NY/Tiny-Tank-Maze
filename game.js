@@ -22,6 +22,59 @@
   const modeBadge = document.getElementById("modeBadge");
   const modeSubtitle = document.getElementById("modeSubtitle");
 
+  const gameShell = canvas.closest(".game-shell");
+  const fullscreenBtn = document.getElementById("fullscreenBtn");
+
+  function currentFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  async function enterGameFullscreen() {
+    if (!gameShell) return;
+
+    try {
+      if (gameShell.requestFullscreen) {
+        await gameShell.requestFullscreen();
+      } else if (gameShell.webkitRequestFullscreen) {
+        gameShell.webkitRequestFullscreen();
+      }
+      canvas.focus();
+    } catch (error) {
+      console.warn("Fullscreen request failed:", error);
+    }
+  }
+
+  async function exitGameFullscreen() {
+    try {
+      if (document.exitFullscreen) {
+        await document.exitFullscreen();
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    } catch (error) {
+      console.warn("Fullscreen exit failed:", error);
+    }
+  }
+
+  function toggleGameFullscreen() {
+    if (currentFullscreenElement()) {
+      exitGameFullscreen();
+    } else {
+      enterGameFullscreen();
+    }
+  }
+
+  function updateFullscreenButton() {
+    if (!fullscreenBtn) return;
+    fullscreenBtn.textContent = currentFullscreenElement()
+      ? "EXIT FULLSCREEN"
+      : "FULLSCREEN";
+  }
+
+  fullscreenBtn?.addEventListener("click", toggleGameFullscreen);
+  document.addEventListener("fullscreenchange", updateFullscreenButton);
+  document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+
   const W = canvas.width;
   const H = canvas.height;
 
@@ -2112,6 +2165,12 @@
     if (isTypingTarget(e.target)) return;
 
     const key = e.key.toLowerCase();
+
+    if (key === "f" && !e.repeat) {
+      toggleGameFullscreen();
+      e.preventDefault();
+      return;
+    }
 
     // Only activate gameplay controls while a round is actually running.
     if (!running) return;
