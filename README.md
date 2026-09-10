@@ -1,5 +1,7 @@
 # Tiny Tank Maze
 
+This branch's September 10 candidate includes Nolan's new features plus the reviewed fixes: single-player **5.17.1**, multiplayer **5.9.1**. Read [NOLANS_ADDITIONS_HANDOFF.md](NOLANS_ADDITIONS_HANDOFF.md) before further edits. Pushing this branch does not publish it to Vercel.
+
 Current multiplayer release: **v5.8.2** on the `server` branch. See [RELEASE_STATUS.md](RELEASE_STATUS.md) for what is deployed and [MULTIPLAYER_SETUP.md](MULTIPLAYER_SETUP.md) for the two-host update workflow.
 
 ## Earlier single-player updates — v4.2 Enemy Scaling

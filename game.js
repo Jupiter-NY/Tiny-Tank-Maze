@@ -514,6 +514,10 @@
     return Number(player?.mods?.[id] || 0);
   }
 
+  function getMultishotStepDegrees(level) {
+    return level > 0 ? 4 + level * 1.5 : 0;
+  }
+
   function getUpgradeEffectText(id, nextStack = getUpgradeStack(id) + 1) {
     if (id === "rapid") {
       const multiplier = Math.pow(0.82, nextStack);
@@ -548,8 +552,9 @@
     }
 
     if (id === "multishot") {
-      const bulletsPerVolley = 1 + Math.min(3, nextStack) * 2;
-      const spread = 5 + Math.min(3, nextStack) * 4;
+      const level = Math.min(3, nextStack);
+      const bulletsPerVolley = 1 + level * 2;
+      const spread = level * getMultishotStepDegrees(level);
       return `${bulletsPerVolley} bullets • 50% direct damage each • ±${spread}° spread`;
     }
 
@@ -1226,10 +1231,13 @@
         explosiveRadius: Math.min(88, 52 + roundNumber * 2),
         explosiveDamage: Math.round(scaling.damage * 0.55),
 
-        poisonDps: traits.poison
+        poisonWeaponDps: traits.poison
           ? Math.min(9, 3.5 + roundNumber * 0.25)
           : 0,
         poisonDuration: traits.poison ? 3.2 : 0,
+        // Incoming Poison Shot status is independent of this enemy's weapon.
+        poisonUntil: 0,
+        poisonDps: 0,
         bulletBounces: traits.bounce ? 2 : 0,
 
         speed: moveSpeed,
@@ -1534,7 +1542,7 @@
         : 1;
 
     const spreadStep = isPlayer && multishotLevel > 0
-      ? ((4 + multishotLevel * 1.5) * Math.PI) / 180
+      ? (getMultishotStepDegrees(multishotLevel) * Math.PI) / 180
       : !isPlayer && owner.multishotTrait
         ? (8 * Math.PI) / 180
         : 0;
@@ -1577,7 +1585,7 @@
 
         enemyMultishot: !isPlayer && Boolean(owner.multishotTrait),
         enemyPoison: !isPlayer && Boolean(owner.poisonTrait),
-        enemyPoisonDps: !isPlayer ? owner.poisonDps || 0 : 0,
+        enemyPoisonDps: !isPlayer ? owner.poisonWeaponDps || 0 : 0,
         enemyPoisonDuration: !isPlayer ? owner.poisonDuration || 0 : 0,
         enemyBounce: !isPlayer && Boolean(owner.bounceTrait),
         enemySniper: !isPlayer && Boolean(owner.sniperTrait),

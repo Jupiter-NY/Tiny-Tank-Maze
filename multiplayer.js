@@ -72,22 +72,42 @@
   }
 
   function updateFullscreenButton() {
+    syncFullscreenCursor();
     if (!fullscreenBtn) return;
     fullscreenBtn.textContent = currentFullscreenElement()
       ? "EXIT FULLSCREEN"
       : "FULLSCREEN";
   }
 
-  fullscreenBtn?.addEventListener("click", toggleGameFullscreen);
+  function syncFullscreenCursor() {
+    if (!gameShell) return;
+    const dialogVisible = [joinPanel, lobbyPanel, roundPanel]
+      .some((panel) => panel && !panel.classList.contains("hidden"));
+    gameShell.classList.toggle("fullscreen-ui-cursor",
+      currentFullscreenElement() === gameShell && dialogVisible);
+  }
+
+  const fullscreenPanelObserver = new MutationObserver(syncFullscreenCursor);
+  for (const panel of [joinPanel, lobbyPanel, roundPanel]) {
+    if (panel) fullscreenPanelObserver.observe(panel, {
+      attributes: true, attributeFilter: ["class"],
+    });
+  }
+
+  fullscreenBtn?.addEventListener("click", (event) => {
+    event.preventDefault();
+    toggleGameFullscreen();
+  });
   document.addEventListener("fullscreenchange", updateFullscreenButton);
   document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+  updateFullscreenButton();
 
   const W = canvas.width, H = canvas.height;
   const COLS = 18, ROWS = 12, CELL = 64, WALL = 8;
   const BASE_VISION = 235;
   const PLAYER_NAME_KEY = "tinyTankMazePlayerName";
   const serverUrl = String(window.TANK_CONFIG?.multiplayerServer || "").trim();
-  const CLIENT_VERSION = "5.9.0";
+  const CLIENT_VERSION = "5.9.1";
 
   let lastRenderErrorText = "";
   let lastRenderErrorAt = 0;
@@ -155,6 +175,60 @@
       : `Connected • ${Math.round(pingMs)} ms ping • ${Math.round(interpolationDelayMs)} ms smoothing`;
   }
 
+  function returnToRoomEntryAfterDisconnect() {
+    const wasPlaying = roomState === "playing";
+    if (roomCode) roomInput.value = roomCode;
+    myId = null;
+    roomCode = null;
+    hostId = null;
+    roomState = "none";
+    lobby = [];
+    ready = false;
+    connectingAction = null;
+    maze = [];
+    wallRects = [];
+    wallSegments = [];
+    state = null;
+    localVisual = null;
+    renderPlayers.clear();
+    remoteHistories.clear();
+    for (const key of Object.keys(keys)) keys[key] = false;
+    mouse.down = false;
+    pendingClientState = null;
+    pendingFire = false;
+    nextClientStateSeq = 1;
+    lastClientStateSentAt = 0;
+    pingMs = null;
+    lastPingSentAt = 0;
+    serverClockOffsetMs = 0;
+    hasClockSync = false;
+    jitterMs = 0;
+    interpolationDelayMs = 100;
+    previousSnapshotArrival = null;
+    previousSnapshotServerTime = null;
+    lastFrame = performance.now();
+    lastRenderErrorText = "";
+    lastRenderErrorAt = 0;
+
+    lobbyPlayers.replaceChildren();
+    lobbyMessage.textContent = "";
+    roomCodeLabel.textContent = "-----";
+    readyBtn.textContent = "READY";
+    startBtn.disabled = true;
+    startBtn.classList.add("hidden");
+    playAgainBtn.classList.add("hidden");
+    winnerTitle.textContent = "Winner";
+    winnerText.textContent = "";
+    lobbyPanel.classList.add("hidden");
+    roundPanel.classList.add("hidden");
+    joinPanel.classList.remove("hidden");
+    createBtn.disabled = false;
+    joinBtn.disabled = false;
+    connectionStatus.textContent = "Disconnected from multiplayer server";
+    showError("Disconnected. Create or join a room to reconnect." +
+      (wasPlaying ? " An ongoing match cannot be rejoined." : ""));
+  }
+
   function connectThen(action) {
     showError("");
     if (!configured()) {
@@ -169,8 +243,10 @@
     connectionStatus.textContent = "Connecting to multiplayer server…";
     createBtn.disabled = true;
     joinBtn.disabled = true;
-    socket = new WebSocket(serverUrl);
-    socket.addEventListener("open", () => {
+    const connection = new WebSocket(serverUrl);
+    socket = connection;
+    connection.addEventListener("open", () => {
+      if (socket !== connection) return;
       pingMs = null;
       updateConnectionStatus();
       lastPingSentAt = Date.now();
@@ -179,19 +255,20 @@
       joinBtn.disabled = false;
       if (connectingAction) { const fn = connectingAction; connectingAction = null; fn(); }
     });
-    socket.addEventListener("message", (event) => {
+    connection.addEventListener("message", (event) => {
+      if (socket !== connection) return;
       try { handleMessage(JSON.parse(event.data)); }
       catch (err) { console.error("Bad server message", err); }
     });
-    socket.addEventListener("close", () => {
-      connectionStatus.textContent = "Disconnected from multiplayer server";
-      createBtn.disabled = false;
-      joinBtn.disabled = false;
-      if (roomState === "playing") showError("Connection lost. Return to the lobby and reconnect.");
-      roomState = "none";
-      state = null;
+    connection.addEventListener("close", () => {
+      if (socket !== connection) return;
+      socket = null;
+      returnToRoomEntryAfterDisconnect();
     });
-    socket.addEventListener("error", () => showError("Could not connect to the multiplayer server."));
+    connection.addEventListener("error", () => {
+      if (socket !== connection) return;
+      showError("Could not connect to the multiplayer server.");
+    });
   }
 
   function createRoom() {
@@ -317,7 +394,9 @@
       mouse.down = false;
       keys.shooting = false;
       sendClientState({ force: true });
-      winnerTitle.textContent = message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
+      winnerTitle.textContent = message.winnerId == null
+        ? "Draw"
+        : message.winnerId === myId ? "You win!" : `${message.winnerName} wins`;
       const me = state?.self;
       winnerText.textContent = `Your kills: ${me?.kills || 0}. The host can start another match in the same room.`;
       playAgainBtn.classList.toggle("hidden", hostId !== myId);
@@ -671,7 +750,12 @@
 
     angles.sort((a, b) => a - b);
 
+    let previousAngle;
     for (const angle of angles) {
+      // Shared endpoints and collinear corners can produce identical rays.
+      // Trace each exact angle once; keep nearby but distinct corner rays.
+      if (angle === previousAngle) continue;
+      previousAngle = angle;
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
       let distance = radius;

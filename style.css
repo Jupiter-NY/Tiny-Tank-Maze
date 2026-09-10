@@ -442,6 +442,49 @@ canvas {
   outline: 0;
 }
 
+/* Keep the canvas element itself at 3:2, so its bounding rectangle remains
+   the exact coordinate system used by both clients' mouse handlers. */
+.game-shell:is(:fullscreen, :-webkit-full-screen) {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #05070a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.game-shell:is(:fullscreen, :-webkit-full-screen) canvas {
+  width: min(100vw, 150vh);
+  height: min(100vh, 66.6666667vw);
+  flex: none;
+}
+
+.game-shell:is(:fullscreen, :-webkit-full-screen),
+.game-shell:is(:fullscreen, :-webkit-full-screen) * {
+  cursor: none;
+}
+
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen),
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen) * {
+  cursor: auto;
+}
+
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen) a,
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen) button {
+  cursor: pointer;
+}
+
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen) input,
+.game-shell.fullscreen-ui-cursor:is(:fullscreen, :-webkit-full-screen) textarea {
+  cursor: text;
+}
+
 .panel {
   position: absolute;
   inset: 0;
@@ -616,4 +659,126 @@ canvas {
 .leaderboard-warning {
   color: #d6ad70 !important;
 }
-\n\n/* ---------------- Multiplayer ---------------- */\n\n@media (min-width: 1050px) {\n  .mode-grid {\n    grid-template-columns: repeat(3, minmax(0, 1fr));\n  }\n}\n\n.multiplayer-mode {\n  background:\n    radial-gradient(circle at 100% 0%, rgba(84, 137, 202, 0.16), transparent 45%),\n    rgba(16, 21, 30, 0.9);\n}\n\n.mp-dialog {\n  width: min(650px, 100%);\n  text-align: center;\n}\n\n.mp-dialog h2 {\n  margin: 7px 0 10px;\n  font-size: clamp(35px, 5vw, 54px);\n  letter-spacing: -0.05em;\n}\n\n.mp-dialog > p {\n  color: #aeb8c8;\n  line-height: 1.55;\n}\n\n.mp-label {\n  display: block;\n  margin: 22px auto 7px;\n  max-width: 390px;\n  color: #aeb7c6;\n  text-align: left;\n  font-size: 12px;\n  font-weight: 800;\n  letter-spacing: .08em;\n  text-transform: uppercase;\n}\n\n.mp-input {\n  width: min(390px, 100%);\n  min-height: 46px;\n  border: 1px solid #3a4558;\n  border-radius: 10px;\n  outline: 0;\n  padding: 0 13px;\n  background: #0d1118;\n  color: #f2f5fa;\n  font-size: 16px;\n}\n\n.mp-input:focus {\n  border-color: #8390a5;\n  box-shadow: 0 0 0 3px rgba(131, 144, 165, .16);\n}\n\n.mp-join-grid {\n  display: grid;\n  gap: 12px;\n  margin: 18px auto 0;\n  max-width: 390px;\n}\n\n.mp-code-row {\n  display: grid;\n  grid-template-columns: 1fr auto;\n  gap: 8px;\n}\n\n.room-code-input {\n  width: 100%;\n  text-transform: uppercase;\n  letter-spacing: .18em;\n  font-weight: 900;\n}\n\n.mp-room-heading h2 {\n  margin-bottom: 4px;\n}\n\n#roomCodeLabel {\n  color: #8fbaff;\n  letter-spacing: .08em;\n}\n\n.mp-player-list {\n  margin: 22px 0;\n  border: 1px solid #30394a;\n  border-radius: 12px;\n  overflow: hidden;\n  text-align: left;\n}\n\n.mp-player-row {\n  display: flex;\n  justify-content: space-between;\n  gap: 18px;\n  padding: 12px 14px;\n  border-bottom: 1px solid #252d3a;\n  background: rgba(15, 20, 29, .78);\n}\n\n.mp-player-row:last-child {\n  border-bottom: 0;\n}\n\n.mp-player-row span {\n  color: #8793a6;\n  font-size: 11px;\n  font-weight: 800;\n  letter-spacing: .08em;\n}\n\n.mp-small-note {\n  margin-top: 14px;\n  color: #8490a2;\n  font-size: 12px;\n}\n
+
+
+/* ---------------- Multiplayer ---------------- */
+
+@media (min-width: 1050px) {
+  .mode-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.multiplayer-mode {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(84, 137, 202, 0.16), transparent 45%),
+    rgba(16, 21, 30, 0.9);
+}
+
+.mp-dialog {
+  width: min(650px, 100%);
+  text-align: center;
+}
+
+.mp-dialog h2 {
+  margin: 7px 0 10px;
+  font-size: clamp(35px, 5vw, 54px);
+  letter-spacing: -0.05em;
+}
+
+.mp-dialog > p {
+  color: #aeb8c8;
+  line-height: 1.55;
+}
+
+.mp-label {
+  display: block;
+  margin: 22px auto 7px;
+  max-width: 390px;
+  color: #aeb7c6;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.mp-input {
+  width: min(390px, 100%);
+  min-height: 46px;
+  border: 1px solid #3a4558;
+  border-radius: 10px;
+  outline: 0;
+  padding: 0 13px;
+  background: #0d1118;
+  color: #f2f5fa;
+  font-size: 16px;
+}
+
+.mp-input:focus {
+  border-color: #8390a5;
+  box-shadow: 0 0 0 3px rgba(131, 144, 165, .16);
+}
+
+.mp-join-grid {
+  display: grid;
+  gap: 12px;
+  margin: 18px auto 0;
+  max-width: 390px;
+}
+
+.mp-code-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.room-code-input {
+  width: 100%;
+  text-transform: uppercase;
+  letter-spacing: .18em;
+  font-weight: 900;
+}
+
+.mp-room-heading h2 {
+  margin-bottom: 4px;
+}
+
+#roomCodeLabel {
+  color: #8fbaff;
+  letter-spacing: .08em;
+}
+
+.mp-player-list {
+  margin: 22px 0;
+  border: 1px solid #30394a;
+  border-radius: 12px;
+  overflow: hidden;
+  text-align: left;
+}
+
+.mp-player-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #252d3a;
+  background: rgba(15, 20, 29, .78);
+}
+
+.mp-player-row:last-child {
+  border-bottom: 0;
+}
+
+.mp-player-row span {
+  color: #8793a6;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.mp-small-note {
+  margin-top: 14px;
+  color: #8490a2;
+  font-size: 12px;
+}
