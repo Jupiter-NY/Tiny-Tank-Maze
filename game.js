@@ -25,6 +25,7 @@
   const pauseBtn = document.getElementById("pauseBtn");
   const resumeBtn = document.getElementById("resumeBtn");
 
+
   const fullscreenShell = canvas.closest(".game-shell");
   const fullscreenBtn = document.getElementById("fullscreenBtn");
 
@@ -132,6 +133,16 @@
   const GRENADE_FUSE = 1.25;
   const KILL_STREAK_WINDOW = 4.0;
 
+  const BOSS_FIRST_WAVE = 10;
+  const BOSS_INTERVAL = 5;
+  const BOSS_ARENA = {
+    minC: 6,
+    maxC: 11,
+    minR: 4,
+    maxR: 7,
+  };
+
+
   const PICKUP_SPAWN_MIN = 6.5;
   const PICKUP_SPAWN_MAX = 12.0;
   const MAX_ACTIVE_PICKUPS = 10;
@@ -147,6 +158,8 @@
   let maze = [];
   let wallRects = [];
   let wallSegments = [];
+  let normalMazeSnapshot = null;
+  let bossArenaActive = false;
   let player;
   let enemies = [];
   let bullets = [];
@@ -215,6 +228,7 @@
     togglePause();
   });
   resumeBtn?.addEventListener("click", resumeGame);
+
 
   // Lightweight celebration layers. These update even while gameplay is paused
   // at the Infinite upgrade screen, so wave clears still feel alive.
@@ -431,7 +445,7 @@
         damage: 20,
         speedBonus: 0,
         fireRateMultiplier: 1,
-        bulletSpeed: 310,
+        bulletSpeed: 390,
       };
     }
 
@@ -443,7 +457,7 @@
       damage: Math.round(20 + scaledWave * 1.25),
       speedBonus: Math.min(28, scaledWave * 1.25),
       fireRateMultiplier: Math.max(0.70, 1 - scaledWave * 0.018),
-      bulletSpeed: Math.min(405, 310 + scaledWave * 5),
+      bulletSpeed: Math.min(500, 390 + scaledWave * 6),
     };
   }
 
@@ -647,6 +661,10 @@
     spawnEnemies(enemyCountForWave(roundNumber));
     scheduleNextPickupSpawn();
 
+    modeSubtitle.textContent = isBossWave(roundNumber)
+      ? "BOSS WAVE — enter the central arena or retreat for supplies."
+      : "Survive, upgrade, and keep climbing.";
+
     running = true;
     canvas.focus();
   }
@@ -678,6 +696,165 @@
       x: c * CELL + CELL / 2,
       y: r * CELL + CELL / 2,
     };
+  }
+
+
+  function isBossWave(wave = roundNumber) {
+    return (
+      MODE === "infinite" &&
+      wave >= BOSS_FIRST_WAVE &&
+      wave % BOSS_INTERVAL === 0
+    );
+  }
+
+  function isBossArenaCell(c, r) {
+    return (
+      c >= BOSS_ARENA.minC &&
+      c <= BOSS_ARENA.maxC &&
+      r >= BOSS_ARENA.minR &&
+      r <= BOSS_ARENA.maxR
+    );
+  }
+
+  function bossArenaPixelBounds() {
+    return {
+      x: BOSS_ARENA.minC * CELL,
+      y: BOSS_ARENA.minR * CELL,
+      w: (BOSS_ARENA.maxC - BOSS_ARENA.minC + 1) * CELL,
+      h: (BOSS_ARENA.maxR - BOSS_ARENA.minR + 1) * CELL,
+    };
+  }
+
+  function cloneMazeLayout() {
+    return maze.map((cell) => ({
+      c: cell.c,
+      r: cell.r,
+      visited: false,
+      walls: [...cell.walls],
+    }));
+  }
+
+  function restoreNormalMazeLayout() {
+    if (!normalMazeSnapshot) return;
+    maze = normalMazeSnapshot.map((cell) => ({
+      c: cell.c,
+      r: cell.r,
+      visited: false,
+      walls: [...cell.walls],
+    }));
+    bossArenaActive = false;
+    buildWalls();
+  }
+
+  function setSharedWall(c, r, direction, blocked) {
+    const cell = getCell(c, r);
+    if (!cell) return;
+
+    const dirs = [
+      [0, -1, 2],
+      [1, 0, 3],
+      [0, 1, 0],
+      [-1, 0, 1],
+    ];
+
+    cell.walls[direction] = blocked;
+    const [dc, dr, opposite] = dirs[direction];
+    const other = getCell(c + dc, r + dr);
+    if (other) other.walls[opposite] = blocked;
+  }
+
+  function carveBossArena() {
+    // Remove every wall inside the 6×4 center.
+    for (let r = BOSS_ARENA.minR; r <= BOSS_ARENA.maxR; r++) {
+      for (let c = BOSS_ARENA.minC; c <= BOSS_ARENA.maxC; c++) {
+        if (c < BOSS_ARENA.maxC) setSharedWall(c, r, 1, false);
+        if (r < BOSS_ARENA.maxR) setSharedWall(c, r, 2, false);
+      }
+    }
+
+    // Box the arena off from the maze.
+    for (let c = BOSS_ARENA.minC; c <= BOSS_ARENA.maxC; c++) {
+      setSharedWall(c, BOSS_ARENA.minR, 0, true);
+      setSharedWall(c, BOSS_ARENA.maxR, 2, true);
+    }
+    for (let r = BOSS_ARENA.minR; r <= BOSS_ARENA.maxR; r++) {
+      setSharedWall(BOSS_ARENA.minC, r, 3, true);
+      setSharedWall(BOSS_ARENA.maxC, r, 1, true);
+    }
+
+    // Four one-cell entrances.
+    setSharedWall(8, BOSS_ARENA.minR, 0, false);
+    setSharedWall(9, BOSS_ARENA.maxR, 2, false);
+    setSharedWall(BOSS_ARENA.minC, 5, 3, false);
+    setSharedWall(BOSS_ARENA.maxC, 6, 1, false);
+
+    bossArenaActive = true;
+    buildWalls();
+  }
+
+  function movePlayerToSafeBossEntrance() {
+    if (!player) return;
+    const entry = cellCenter(9, BOSS_ARENA.maxR + 1);
+    player.x = entry.x;
+    player.y = entry.y;
+    player.bodyAngle = -Math.PI / 2;
+    player.turretAngle = -Math.PI / 2;
+  }
+
+  function ensurePlayerOutsideRestoredArena() {
+    if (!player) return;
+    const cell = pointToCell(player.x, player.y);
+    if (!isBossArenaCell(cell.c, cell.r) && !collidesWalls(player.x, player.y, PLAYER_RADIUS)) {
+      return;
+    }
+
+    const safe = cellCenter(9, BOSS_ARENA.maxR + 1);
+    player.x = safe.x;
+    player.y = safe.y;
+  }
+
+  function prepareMazeForWave(wave) {
+    const wasBossArena = bossArenaActive;
+    restoreNormalMazeLayout();
+
+    if (isBossWave(wave)) {
+      carveBossArena();
+      pickups = pickups.filter((pickup) => {
+        const cell = pointToCell(pickup.x, pickup.y);
+        return !isBossArenaCell(cell.c, cell.r);
+      });
+      movePlayerToSafeBossEntrance();
+    } else if (wasBossArena) {
+      ensurePlayerOutsideRestoredArena();
+    }
+  }
+
+  function estimatePlayerBossDps() {
+    if (!player) return 75;
+
+    const baseDamage = 30 + getUpgradeStack("damage") * 8;
+    const multi = Math.min(3, getUpgradeStack("multishot"));
+    const pelletCount = multi > 0 ? 1 + multi * 2 : 1;
+    const directPerVolley =
+      baseDamage * (multi > 0 ? pelletCount * 0.5 : 1);
+
+    let fireDelay =
+      player.baseFireDelay * Math.pow(0.82, getUpgradeStack("rapid"));
+    fireDelay = Math.max(0.065, fireDelay);
+
+    let volleyDamage = directPerVolley;
+
+    const explosive = getUpgradeStack("explosive");
+    if (explosive > 0) {
+      volleyDamage += (10 + explosive * 8) * pelletCount;
+    }
+
+    const poison = getUpgradeStack("poison");
+    const poisonDps = poison > 0 ? 4 + Math.min(5, poison) * 4 : 0;
+
+    // Ricochets and bounce explosions are intentionally not fully counted:
+    // their real boss damage depends heavily on position and player accuracy.
+    return Math.max(60, volleyDamage / fireDelay + poisonDps);
   }
 
   function generateMaze() {
@@ -745,6 +922,8 @@
     }
 
     buildWalls();
+    normalMazeSnapshot = cloneMazeLayout();
+    bossArenaActive = false;
   }
 
   function buildWalls() {
@@ -855,6 +1034,11 @@
     for (let tries = 0; tries < 80; tries++) {
       const c = randInt(COLS);
       const r = randInt(ROWS);
+
+      if (bossArenaActive && isBossArenaCell(c, r)) {
+        continue;
+      }
+
       const pos = cellCenter(c, r);
 
       // Avoid spawning directly on top of the player, enemies, or another pickup.
@@ -901,8 +1085,64 @@
     return false;
   }
 
+
+  function createBoss() {
+    const bounds = bossArenaPixelBounds();
+    const tier = Math.max(1, Math.floor((roundNumber - BOSS_FIRST_WAVE) / BOSS_INTERVAL) + 1);
+    const estimatedDps = estimatePlayerBossDps();
+
+    // Target roughly 50 seconds of perfect sustained DPS. In real play,
+    // dodging and missed shots pull the fight closer to about one minute.
+    const targetHp = Math.round(estimatedDps * 50);
+    const minimumHp = 3600 + (tier - 1) * 1250;
+    const maximumHp = 13000 + (tier - 1) * 4500;
+    const maxHp = clamp(targetHp, minimumHp, maximumHp);
+
+    return {
+      x: bounds.x + bounds.w / 2,
+      y: bounds.y + bounds.h / 2,
+      bodyAngle: Math.PI,
+      turretAngle: Math.PI,
+      hp: maxHp,
+      maxHp,
+      hitRadius: 31,
+      bossTrait: true,
+      enemyType: "boss",
+
+      speed: Math.min(88, 60 + tier * 4),
+      fireCooldown: 1.2,
+      bossMoveTimer: 0,
+      bossMoveTarget: null,
+      bossAttackIndex: randInt(3),
+      bossTier: tier,
+
+      poisonUntil: 0,
+      poisonDps: 0,
+      rememberPlayerUntil: Infinity,
+      alive: true,
+    };
+  }
+
+  function spawnBossWave() {
+    enemies = [createBoss()];
+
+    // Make sure the surrounding maze has resources to retreat toward.
+    const desiredPickups = 5;
+    let activeOutside = pickups.filter((pickup) => pickup.alive).length;
+    while (activeOutside < desiredPickups) {
+      if (!spawnRandomPickup()) break;
+      activeOutside++;
+    }
+  }
+
   function spawnEnemies(count) {
+    prepareMazeForWave(roundNumber);
     enemies = [];
+
+    if (isBossWave(roundNumber)) {
+      spawnBossWave();
+      return;
+    }
 
     const playerCell = pointToCell(player.x, player.y);
     const occupied = [playerCell];
@@ -957,7 +1197,7 @@
 
       if (traits.sniper) {
         bulletDamage = Math.round(scaling.damage * 2.25);
-        bulletSpeed = Math.max(540, Math.round(scaling.bulletSpeed * 1.55));
+        bulletSpeed = Math.max(650, Math.round(scaling.bulletSpeed * 1.50));
         moveSpeed = 70 + Math.random() * 10 + scaling.speedBonus * 0.45;
       }
 
@@ -1255,7 +1495,7 @@
     return hasLineOfSight(player.x, player.y, x, y);
   }
 
-  function shoot(owner, angle, speed = 370) {
+  function shoot(owner, angle, speed = 470) {
     const isPlayer = owner === player;
     const now = gameNowSeconds();
 
@@ -1729,6 +1969,21 @@
       if (attacker === player && tank !== player) {
         player.score++;
         awardKillStreakPoints(tank);
+
+        if (tank.bossTrait) {
+          const bossBonus = 1500 + roundNumber * 175;
+          player.points += bossBonus;
+          floatingTexts.push({
+            x: tank.x,
+            y: tank.y - 46,
+            text: `BOSS +${bossBonus}`,
+            color: "#ffcf70",
+            life: 1.6,
+            maxLife: 1.6,
+            vy: -26,
+            scale: 1.25,
+          });
+        }
       }
 
       if (tank === player) {
@@ -1855,6 +2110,172 @@
     }
   }
 
+
+  function pushBossBullet(boss, angle, kind) {
+    const tier = boss.bossTier || 1;
+    const waveScale = Math.max(0, roundNumber - BOSS_FIRST_WAVE);
+    let speed = 310;
+    let damage = 20;
+    let radius = BULLET_RADIUS;
+    let bounces = 0;
+    let enemyExplosive = false;
+    let explosionRadius = 0;
+    let explosionDamage = 0;
+
+    if (kind === "big") {
+      speed = 265 + tier * 9;
+      damage = Math.round(30 + waveScale * 0.85);
+      radius = 11;
+    } else if (kind === "bounce") {
+      speed = 650 + tier * 20;
+      damage = Math.round(16 + waveScale * 0.55);
+      radius = 4;
+      bounces = 5;
+    } else {
+      speed = 390 + tier * 10;
+      damage = Math.round(14 + waveScale * 0.38);
+      radius = 5;
+      enemyExplosive = true;
+      explosionRadius = Math.min(105, 72 + tier * 5);
+      explosionDamage = Math.round(18 + waveScale * 0.48);
+    }
+
+    const muzzle = 39;
+    bullets.push({
+      x: boss.x + Math.cos(angle) * muzzle,
+      y: boss.y + Math.sin(angle) * muzzle,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      owner: boss,
+      life: kind === "bounce" ? 3.8 : 3.1,
+      damage,
+      hitRadius: radius,
+      bouncesLeft: bounces,
+      enemyExplosive,
+      enemyExplosionRadius: explosionRadius,
+      enemyExplosionDamage: explosionDamage,
+      enemyBounce: kind === "bounce",
+      bossBulletType: kind,
+      alive: true,
+    });
+  }
+
+  function bossShoot(boss, aimAngle) {
+    if (boss.fireCooldown > 0 || !boss.alive) return;
+
+    const hpFraction = boss.hp / Math.max(1, boss.maxHp);
+    const tier = boss.bossTier || 1;
+    const phaseMultiplier =
+      hpFraction < 0.25 ? 0.70 : hpFraction < 0.55 ? 0.82 : 1;
+
+    boss.fireCooldown = Math.max(
+      0.58,
+      (1.28 - Math.min(0.22, (tier - 1) * 0.035)) * phaseMultiplier
+    );
+
+    const kind = ["big", "bounce", "explosive"][boss.bossAttackIndex % 3];
+    boss.bossAttackIndex = (boss.bossAttackIndex + 1) % 3;
+    boss.nextBossAttack =
+      ["big", "bounce", "explosive"][boss.bossAttackIndex % 3];
+
+    if (kind === "big") {
+      pushBossBullet(boss, aimAngle, "big");
+      return;
+    }
+
+    if (kind === "bounce") {
+      const spread = 0.055;
+      pushBossBullet(boss, aimAngle - spread, "bounce");
+      pushBossBullet(boss, aimAngle + spread, "bounce");
+      return;
+    }
+
+    const spread = 0.13;
+    pushBossBullet(boss, aimAngle - spread, "explosive");
+    pushBossBullet(boss, aimAngle, "explosive");
+    pushBossBullet(boss, aimAngle + spread, "explosive");
+  }
+
+  function updateBoss(boss, dt) {
+    const bounds = bossArenaPixelBounds();
+    const margin = 54;
+    const now = gameNowSeconds();
+
+    const desiredTurretAngle = Math.atan2(
+      player.y - boss.y,
+      player.x - boss.x
+    );
+    boss.turretAngle = turnTowardAngle(
+      boss.turretAngle,
+      desiredTurretAngle,
+      3.6 * dt
+    );
+
+    boss.bossMoveTimer -= dt;
+    if (!boss.bossMoveTarget || boss.bossMoveTimer <= 0) {
+      boss.bossMoveTimer = 0.75 + Math.random() * 1.15;
+      boss.bossMoveTarget = {
+        x: bounds.x + margin + Math.random() * Math.max(1, bounds.w - margin * 2),
+        y: bounds.y + margin + Math.random() * Math.max(1, bounds.h - margin * 2),
+      };
+    }
+
+    const target = boss.bossMoveTarget;
+    let dx = target.x - boss.x;
+    let dy = target.y - boss.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 5) {
+      dx /= len;
+      dy /= len;
+      moveCircle(
+        boss,
+        dx * boss.speed * dt,
+        dy * boss.speed * dt,
+        boss.hitRadius || 31
+      );
+      boss.bodyAngle = turnTowardAngle(
+        boss.bodyAngle,
+        Math.atan2(dy, dx),
+        2.8 * dt
+      );
+    }
+
+    const canSeePlayer =
+      player.alive &&
+      hasLineOfSight(boss.x, boss.y, player.x, player.y);
+
+    if (canSeePlayer) {
+      const aimError =
+        boss.hp / boss.maxHp < 0.35 ? 0.012 : 0.025;
+      bossShoot(
+        boss,
+        boss.turretAngle + (Math.random() - 0.5) * aimError
+      );
+    }
+
+    // Small telegraph particles make the active boss weapon readable.
+    if (Math.random() < dt * 5) {
+      const nextKind =
+        boss.nextBossAttack ||
+        ["big", "bounce", "explosive"][boss.bossAttackIndex % 3];
+      const color =
+        nextKind === "big"
+          ? "#ff5f68"
+          : nextKind === "bounce"
+            ? "#78bfff"
+            : "#ffae57";
+      particles.push({
+        x: boss.x + Math.cos(boss.turretAngle) * 34,
+        y: boss.y + Math.sin(boss.turretAngle) * 34,
+        vx: (Math.random() - 0.5) * 20,
+        vy: (Math.random() - 0.5) * 20,
+        life: 0.15 + Math.random() * 0.2,
+        color,
+        size: 2 + Math.random() * 2,
+      });
+    }
+  }
+
   function updateEnemy(enemy, dt) {
     if (!enemy.alive) return;
 
@@ -1880,6 +2301,11 @@
       }
     } else if ((enemy.poisonUntil || 0) <= now) {
       enemy.poisonDps = 0;
+    }
+
+    if (enemy.bossTrait) {
+      updateBoss(enemy, dt);
+      return;
     }
 
     const distanceToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
@@ -1915,7 +2341,7 @@
         shoot(
           enemy,
           enemy.turretAngle + (Math.random() - 0.5) * spread,
-          enemy.bulletSpeed || 310
+          enemy.bulletSpeed || 390
         );
       }
     }
@@ -2005,6 +2431,7 @@
       }
 
       const speed = Math.hypot(bullet.vx, bullet.vy);
+      const bulletRadius = bullet.hitRadius || BULLET_RADIUS;
       const steps = Math.max(3, Math.ceil((speed * dt) / 8));
 
       for (let i = 0; i < steps && bullet.alive; i++) {
@@ -2013,10 +2440,10 @@
         const nx = bullet.x + stepX;
         const ny = bullet.y + stepY;
 
-        if (collidesWalls(nx, ny, BULLET_RADIUS)) {
+        if (collidesWalls(nx, ny, bulletRadius)) {
           if (bullet.bouncesLeft > 0) {
-            const hitX = collidesWalls(nx, bullet.y, BULLET_RADIUS);
-            const hitY = collidesWalls(bullet.x, ny, BULLET_RADIUS);
+            const hitX = collidesWalls(nx, bullet.y, bulletRadius);
+            const hitY = collidesWalls(bullet.x, ny, bulletRadius);
 
             if (hitX) bullet.vx *= -1;
             if (hitY) bullet.vy *= -1;
@@ -2046,7 +2473,7 @@
         if (bullet.owner !== player && player.alive) {
           if (
             dist2(bullet.x, bullet.y, player.x, player.y) <
-            (PLAYER_RADIUS + BULLET_RADIUS) ** 2
+            (PLAYER_RADIUS + bulletRadius) ** 2
           ) {
             bullet.alive = false;
             damageTank(player, bullet.damage || 20, bullet.owner);
@@ -2062,7 +2489,7 @@
 
             if (
               dist2(bullet.x, bullet.y, enemy.x, enemy.y) <
-              (PLAYER_RADIUS + BULLET_RADIUS) ** 2
+              ((enemy.hitRadius || PLAYER_RADIUS) + bulletRadius) ** 2
             ) {
               damageTank(enemy, bullet.damage || 30, player);
               if (enemy.alive) applyPoison(enemy, bullet);
@@ -2191,6 +2618,15 @@
     ctx.fillStyle = "#11151d";
     ctx.fillRect(0, 0, W, H);
 
+    if (bossArenaActive) {
+      const arena = bossArenaPixelBounds();
+      ctx.fillStyle = "rgba(104, 30, 38, 0.16)";
+      ctx.fillRect(arena.x, arena.y, arena.w, arena.h);
+      ctx.strokeStyle = "rgba(255, 145, 96, 0.28)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(arena.x + 2, arena.y + 2, arena.w - 4, arena.h - 4);
+    }
+
     // Subtle floor grid.
     ctx.strokeStyle = "#171d27";
     ctx.lineWidth = 1;
@@ -2213,8 +2649,97 @@
     }
   }
 
+
+  function drawBossTank(boss) {
+    const nextKind =
+      boss.nextBossAttack ||
+      ["big", "bounce", "explosive"][boss.bossAttackIndex % 3];
+    const accent =
+      nextKind === "big"
+        ? "#ff5f68"
+        : nextKind === "bounce"
+          ? "#78bfff"
+          : "#ffae57";
+
+    ctx.save();
+    ctx.translate(boss.x, boss.y);
+    ctx.rotate(boss.bodyAngle);
+
+    ctx.fillStyle = "#171a20";
+    ctx.fillRect(-31, -25, 62, 8);
+    ctx.fillRect(-31, 17, 62, 8);
+
+    ctx.fillStyle = "#6f2028";
+    ctx.fillRect(-27, -19, 54, 38);
+    ctx.fillStyle = "#962d37";
+    ctx.fillRect(-19, -13, 38, 26);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(-27, -19, 54, 38);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(boss.x, boss.y);
+    ctx.rotate(boss.turretAngle);
+    ctx.fillStyle = "#c7cbd3";
+    ctx.fillRect(-10, -10, 20, 20);
+    ctx.fillStyle = accent;
+    ctx.fillRect(5, -5, 38, 10);
+    ctx.fillStyle = "#f2f4f7";
+    ctx.fillRect(39, -6, 6, 12);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(boss.x, boss.y);
+    ctx.globalAlpha = 0.55 + Math.sin(gameNowMs() / 170) * 0.18;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 36, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBossHealthBar() {
+    const boss = enemies.find((enemy) => enemy.alive && enemy.bossTrait);
+    if (!boss) return;
+
+    const width = Math.min(520, W - 260);
+    const height = 18;
+    const x = (W - width) / 2;
+    const y = 18;
+    const hpPct = clamp(boss.hp / Math.max(1, boss.maxHp), 0, 1);
+
+    ctx.save();
+    ctx.fillStyle = "rgba(4,6,9,0.82)";
+    ctx.fillRect(x - 8, y - 8, width + 16, 45);
+
+    ctx.font = "900 12px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#f4f7fb";
+    ctx.fillText(
+      `BOSS • WAVE ${roundNumber} • ${Math.ceil(boss.hp).toLocaleString()} HP`,
+      W / 2,
+      y
+    );
+
+    ctx.fillStyle = "#2a1015";
+    ctx.fillRect(x, y + 10, width, height);
+    ctx.fillStyle = "#c43d4b";
+    ctx.fillRect(x, y + 10, width * hpPct, height);
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.strokeRect(x, y + 10, width, height);
+    ctx.restore();
+  }
+
   function drawTank(tank, color, isPlayer = false) {
     if (!tank.alive) return;
+
+    if (!isPlayer && tank.bossTrait) {
+      drawBossTank(tank);
+      return;
+    }
 
     const sniper = !isPlayer && Boolean(tank.sniperTrait);
     const bodyColor = sniper ? "#0a0c10" : color;
@@ -2406,7 +2931,13 @@
   function drawBullet(b) {
     const isPlayerBullet = b.owner === player;
 
-    if (isPlayerBullet && b.poisonLevel > 0) {
+    if (!isPlayerBullet && b.bossBulletType === "big") {
+      ctx.fillStyle = "#ff5f68";
+    } else if (!isPlayerBullet && b.bossBulletType === "bounce") {
+      ctx.fillStyle = "#78bfff";
+    } else if (!isPlayerBullet && b.bossBulletType === "explosive") {
+      ctx.fillStyle = "#ffae57";
+    } else if (isPlayerBullet && b.poisonLevel > 0) {
       ctx.fillStyle = b.explosiveLevel > 0 ? "#b9d95f" : "#72e681";
     } else if (isPlayerBullet && b.explosiveLevel > 0) {
       ctx.fillStyle = "#ffb15a";
@@ -2426,9 +2957,9 @@
 
     ctx.beginPath();
     const bulletRadius =
-      BULLET_RADIUS +
+      (b.hitRadius || BULLET_RADIUS) +
       (b.explosiveLevel > 0 ? 1 : 0) +
-      (b.enemyExplosive ? 1 : 0) +
+      (b.enemyExplosive && !b.bossBulletType ? 1 : 0) +
       (b.enemySniper ? 1 : 0);
     ctx.arc(b.x, b.y, bulletRadius, 0, Math.PI * 2);
     ctx.fill();
@@ -2733,6 +3264,10 @@
     }
 
     if (MODE === "infinite") {
+      if (isBossWave(roundNumber)) {
+        statuses.push("BOSS WAVE");
+      }
+
       for (const upgrade of PERMANENT_UPGRADES) {
         const stack = getUpgradeStack(upgrade.id);
         if (stack > 0) statuses.push(`${upgrade.icon}×${stack}`);
@@ -2806,6 +3341,7 @@
       drawPingMarkers();
       drawTank(player, "#52d681", true);
       drawHud();
+      drawBossHealthBar();
 
       // Aim reticle.
       ctx.strokeStyle = "rgba(255,255,255,0.65)";
