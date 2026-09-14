@@ -1,6 +1,6 @@
 # Secure leaderboard backend release
 
-This backend-only branch starts from `origin/server` at `5e9e7bca903813b7773bf7b35c275f5095f347cc`. It accompanies the frontend reconciliation on `release/site-2026-09-14` (Nolan's Obfuscated release plus the reviewed fixes). Frontend files and the multiplayer simulation are unchanged here.
+This backend-only branch starts from `origin/server` at `5e9e7bca903813b7773bf7b35c275f5095f347cc`. It accompanies the frontend reconciliation pushed to `Obfuscated` at `b2b92cdf4f6d4936efa5c0d63a33db28e0acc536` (Nolan's release plus the reviewed fixes and collection landing page). Frontend files and the multiplayer simulation are unchanged here.
 
 ## Changes and validation
 
