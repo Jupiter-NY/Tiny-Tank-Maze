@@ -20,6 +20,27 @@
     );
   }
 
+  function secureApiBase() {
+    const explicit = cleanBaseUrl(config.leaderboardApiUrl);
+    if (explicit) return explicit;
+
+    const wsValue = String(config.multiplayerServer || "").trim();
+    if (!wsValue) return "";
+
+    try {
+      const url = new URL(wsValue, window.location.href);
+      if (url.protocol === "wss:") url.protocol = "https:";
+      if (url.protocol === "ws:") url.protocol = "http:";
+      return url.origin;
+    } catch {
+      return "";
+    }
+  }
+
+  function canSubmitSecurely() {
+    return Boolean(secureApiBase());
+  }
+
   function endpoint(query = "") {
     const base = cleanBaseUrl(config.supabaseUrl);
     return `${base}/rest/v1/${TABLE}${query ? `?${query}` : ""}`;
@@ -40,16 +61,38 @@
     }
 
     let detail = "";
+    let code = "";
     try {
       const body = await response.json();
-      detail = body.message || body.hint || body.details || JSON.stringify(body);
+      detail = body.message || body.error || body.hint || body.details || "";
+      code = body.code || "";
     } catch {
       detail = await response.text();
     }
 
-    throw new Error(
+    const error = new Error(
       `Leaderboard request failed (${response.status})${detail ? `: ${detail}` : ""}`
     );
+    error.status = response.status;
+    error.code = code;
+    throw error;
+  }
+
+  async function apiRequest(path, options = {}) {
+    const base = secureApiBase();
+    if (!base) throw new Error("Secure leaderboard server is not configured.");
+
+    const response = await fetch(`${base}/api/leaderboard${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(options.headers || {}),
+      },
+      cache: "no-store",
+    });
+
+    return parseResponse(response);
   }
 
   async function fetchTop(mode, limit = 5) {
@@ -82,49 +125,72 @@
     return Array.isArray(data) ? data : [];
   }
 
-  function cleanName(value) {
-    return String(value || "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, 16);
+  async function beginRun(mode) {
+    const safeMode = mode === "infinite" ? "infinite" : "classic";
+    return apiRequest("/run/start", {
+      method: "POST",
+      body: JSON.stringify({ mode: safeMode }),
+    });
   }
 
-  function clampInt(value, min, max) {
-    const n = Number.isFinite(Number(value)) ? Math.trunc(Number(value)) : min;
-    return Math.max(min, Math.min(max, n));
+  async function checkpointRun(run, state) {
+    if (!run?.runId || !run?.token || !run?.challenge) {
+      throw new Error("Secure leaderboard run is missing.");
+    }
+
+    const result = await apiRequest("/run/checkpoint", {
+      method: "POST",
+      body: JSON.stringify({
+        runId: run.runId,
+        token: run.token,
+        challenge: run.challenge,
+        wave: state.wave,
+        kills: state.kills,
+        points: state.points,
+        elapsedMs: state.elapsedMs,
+      }),
+    });
+
+    if (result?.challenge) {
+      run.challenge = result.challenge;
+    }
+
+    return result;
   }
 
   async function submitScore(entry) {
-    if (!isConfigured()) throw new Error("Global leaderboard not configured.");
+    const run = entry.run;
+    if (!run?.runId || !run?.token || !run?.challenge) {
+      throw new Error("Secure leaderboard run is missing.");
+    }
 
-    const playerName = cleanName(entry.playerName);
-    if (!playerName) throw new Error("Player name required.");
-
-    const payload = {
-      player_name: playerName,
-      mode: entry.mode === "infinite" ? "infinite" : "classic",
-      score: clampInt(entry.score, 0, 100000000),
-      wave: clampInt(entry.wave, 1, 100000),
-      kills: clampInt(entry.kills, 0, 1000000),
-      cleared: Boolean(entry.cleared),
-    };
-
-    const response = await fetch(endpoint(), {
+    const result = await apiRequest("/run/finish", {
       method: "POST",
-      headers: headers({
-        "Content-Type": "application/json",
-        Prefer: "return=minimal",
+      body: JSON.stringify({
+        runId: run.runId,
+        token: run.token,
+        challenge: run.challenge,
+        playerName: entry.playerName,
+        mode: entry.mode,
+        score: entry.score,
+        points: entry.points,
+        wave: entry.wave,
+        kills: entry.kills,
+        cleared: entry.cleared,
+        hp: entry.hp,
+        elapsedMs: entry.elapsedMs,
       }),
-      body: JSON.stringify(payload),
     });
 
-    await parseResponse(response);
-    return payload;
+    return result;
   }
 
   window.TankLeaderboard = {
     isConfigured,
+    canSubmitSecurely,
     fetchTop,
+    beginRun,
+    checkpointRun,
     submitScore,
   };
 })();

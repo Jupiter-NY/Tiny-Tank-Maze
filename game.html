@@ -2,11 +2,62 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta
+  http-equiv="Content-Security-Policy"
+  content="
+    default-src 'self';
+    script-src 'self';
+    connect-src 'self'
+      https://iwugissyviygmlelemfs.supabase.co
+      https://tiny-tank-maze.onrender.com
+      wss://tiny-tank-maze.onrender.com/ws;
+    img-src 'self' data:;
+    style-src 'self' 'unsafe-inline';
+    object-src 'none';
+    base-uri 'none';
+  "
+/>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tiny Tank Maze — Game</title>
-  <link rel="stylesheet" href="style.css?v=5.17.1" />
+  <link rel="stylesheet" href="style.css" />
 
-  <style id="singleplayer-dialogs">
+  <style id="fullscreen-v5-9-2">
+    .fullscreen-control {
+      font: inherit;
+    }
+
+    .game-shell:fullscreen,
+    .game-shell:-webkit-full-screen {
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #05070a;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: none !important;
+    }
+
+    .game-shell:fullscreen canvas,
+    .game-shell:-webkit-full-screen canvas {
+      width: 100vw !important;
+      height: 100vh !important;
+      max-width: 100vw !important;
+      max-height: 100vh !important;
+      object-fit: contain;
+      display: block;
+      cursor: none !important;
+    }
+
+    .game-shell:fullscreen *,
+    .game-shell:-webkit-full-screen * {
+      cursor: none !important;
+    }
+
     /* v5.11: center Infinite upgrade dialog over the canvas itself. */
     .game-shell {
       position: relative;
@@ -38,6 +89,28 @@
       max-height: calc(100% - 48px);
       overflow: auto;
       box-sizing: border-box;
+    }
+
+    /* v5.12: reveal cursor whenever an interactive overlay is open. */
+    .game-shell.fullscreen-ui-cursor:fullscreen,
+    .game-shell.fullscreen-ui-cursor:fullscreen *,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen * {
+      cursor: auto !important;
+    }
+
+    .game-shell.fullscreen-ui-cursor:fullscreen a,
+    .game-shell.fullscreen-ui-cursor:fullscreen button,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen a,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen button {
+      cursor: pointer !important;
+    }
+
+    .game-shell.fullscreen-ui-cursor:fullscreen input,
+    .game-shell.fullscreen-ui-cursor:fullscreen textarea,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen input,
+    .game-shell.fullscreen-ui-cursor:-webkit-full-screen textarea {
+      cursor: text !important;
     }
 
     /* v5.13: centered pause overlay. */
@@ -155,6 +228,6 @@
 
   <script src="config.js"></script>
   <script src="leaderboard.js"></script>
-  <script src="game.js?v=5.17.1"></script>
+  <script src="game.js?v=5.22.0"></script>
 </body>
 </html>
