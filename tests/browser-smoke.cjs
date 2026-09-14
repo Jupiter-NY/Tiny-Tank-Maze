@@ -26,12 +26,15 @@ assert.ok(output !== root && !output.startsWith(root + path.sep), 'Browser artif
 fs.mkdirSync(output, { recursive: true });
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-tank-browser-server-'));
 const names = ['index.html', 'game.html', 'multiplayer.html', 'style.css', 'game.js', 'multiplayer.js', 'home.js', 'leaderboard.js', 'server/server.js'];
+for (const name of fs.readdirSync(path.join(root, 'server'))) {
+  if (name.endsWith('.js') && name !== 'server.js') names.push(`server/${name}`);
+}
 const sources = Object.fromEntries(names.map(name => [name, fs.readFileSync(path.join(root, name), 'utf8')]));
 const result = {
   startedAt: new Date().toISOString(), sourceDirectory: root,
   sourceSHA256: Object.fromEntries(Object.entries(sources).map(([name, text]) => [name, createHash('sha256').update(text).digest('hex')])),
-  checks: [], errors: [], blockedExternalRequests: [],
-  scope: 'Real browser CSS, fullscreen, mouse input, cursor states, and localhost multiplayer lifecycle. Test-only closures expose state and advance single-player waves. Production files are never edited; configuration has no Supabase endpoint. This is not a complete human match or a performance benchmark.',
+  checks: [], errors: [], warnings: [], blockedExternalRequests: [],
+  scope: 'Real browser unmodified game startup under its own CSP, then CSS, fullscreen, mouse input, cursor states, and localhost multiplayer lifecycle. Test-only closures expose state and advance single-player waves without replacing Canvas or Math methods or disabling integrity checks. Production files are never edited; single-player leaderboard configuration is disabled and secure-score APIs are covered separately. This is not a complete human match or a performance benchmark.',
 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, label, timeout = 10000) {
@@ -47,10 +50,18 @@ function hook(source, code) {
   assert.ok(end > 0, 'Expected client closure');
   return source.slice(0, end) + code + '\n' + source.slice(end);
 }
+// These identifiers refer to the real outer game closure, not the decoy IIFE
+// in the obfuscator preamble. A future obfuscation must update this explicit
+// mapping and the combat tests; do not disable integrity checks to make it pass.
+const obfuscatedGame = sources['game.js'].includes('let _0xaec8094 = false;');
+const gameSymbols = obfuscatedGame
+  ? { mouse: '_0x7dd3fae', player: '_0x5aaf408', enemies: '_0xfa3e6d8', damageTank: '_0xcdff023' }
+  : { mouse: 'mouse', player: 'player', enemies: 'enemies', damageTank: 'damageTank' };
 const gameHook = `window.__smokeGame = {
-  mouse: () => ({...mouse}),
-  safe: () => { player.hp = player.maxHp = 100000; },
-  clearWave: () => { for (const enemy of [...enemies]) damageTank(enemy, enemy.hp, player); }
+  mouse: () => ({...${gameSymbols.mouse}}),
+  safe: () => { ${gameSymbols.player}.hp = ${gameSymbols.player}.maxHp = 100000; },
+  clearWave: () => { for (const enemy of [...${gameSymbols.enemies}]) ${gameSymbols.damageTank}(enemy, enemy.hp, ${gameSymbols.player}); },
+  integrity: () => (${obfuscatedGame ? '{healthy: _0xc5a8453(), latched: _0xaec8094, reason: _0x0d1bc2c}' : '{healthy: true, latched: false, reason: "not present in readable baseline"}'})
 };`;
 const multiplayerHook = `window.__smokeMulti = {
   mouse: () => ({...mouse}),
@@ -65,7 +76,7 @@ const web = http.createServer((req, res) => {
   if (name === 'favicon.ico') { res.writeHead(204).end(); return; }
   if (name === 'config.js') {
     res.setHeader('Content-Type', 'text/javascript');
-    res.end(`window.TANK_CONFIG={multiplayerServer:'ws://127.0.0.1:${gamePort}/ws'};`);
+    res.end(`window.TANK_CONFIG={multiplayerServer:location.pathname.endsWith('/multiplayer.html')?'ws://127.0.0.1:${gamePort}/ws':''};`);
     return;
   }
   if (!names.includes(name) || name.startsWith('server/')) { res.writeHead(404).end(); return; }
@@ -80,6 +91,15 @@ async function startServer(port = 0) {
     .replace('server.listen(PORT, "0.0.0.0"', 'server.listen(PORT, "127.0.0.1"')
     .replace(/console\.log\(`Tiny Tank Maze server listening[^\n]+/, 'console.log("SMOKE_PORT=" + server.address().port);');
   const filename = path.join(temporary, 'server.mjs');
+  fs.writeFileSync(path.join(temporary, 'package.json'), '{"type":"module"}\n');
+  for (const [name, text] of Object.entries(sources)) {
+    if (!name.startsWith('server/') || name === 'server/server.js') continue;
+    // Keep relative backend modules together while resolving optional local
+    // dependencies from server/, never by installing into a shared symlink.
+    const moduleSource = text.replace(/^import express from ["']express["'];?$/m,
+      `import { createRequire as smokeCreateRequire } from 'node:module';\nconst express=smokeCreateRequire(${JSON.stringify(requireBase)})('express');`);
+    fs.writeFileSync(path.join(temporary, path.basename(name)), moduleSource);
+  }
   fs.writeFileSync(filename, local);
   const child = spawn(process.execPath, [filename], { env: { ...process.env, PORT: String(port), ALLOWED_ORIGINS: origin }, stdio: ['ignore', 'pipe', 'pipe'] });
   children.push(child);
@@ -127,7 +147,10 @@ async function pageFor(context, label) {
   const record = { page, received: [], sent: [], loads: 0 };
   page.on('load', () => record.loads++);
   page.on('pageerror', error => result.errors.push({ label, kind: 'pageerror', message: error.message }));
-  page.on('console', message => { if (message.type() === 'error') result.errors.push({ label, kind: 'console', message: message.text() }); });
+  page.on('console', message => {
+    if (message.type() === 'error') result.errors.push({ label, kind: 'console', message: message.text() });
+    if (message.type() === 'warning') result.warnings.push({ label, message: message.text() });
+  });
   page.on('websocket', socket => {
     socket.on('framereceived', frame => { try { record.received.push(JSON.parse(String(frame.payload))); } catch {} });
     socket.on('framesent', frame => { try { record.sent.push(JSON.parse(String(frame.payload))); } catch {} });
@@ -207,6 +230,10 @@ async function singlePlayer(size, mode) {
     const { page } = await pageFor(context, label);
     await page.goto(`${origin}/game.html?mode=${mode}`);
     await page.waitForFunction(() => !!window.__smokeGame);
+    const integrity = await page.evaluate(() => window.__smokeGame.integrity());
+    assert.equal(integrity.healthy, true, `${label}: native rendering integrity stays healthy`);
+    assert.equal(integrity.latched, false, `${label}: no integrity failure is latched`);
+    pass(`${label}: native rendering integrity`, integrity);
     await page.evaluate(() => window.__smokeGame.safe());
     await geometryAndAim(page, '#game', '__smokeGame', `${label}: windowed aiming`, false);
     await enterFullscreen(page, '#fullscreenBtn');
@@ -228,7 +255,36 @@ async function singlePlayer(size, mode) {
     await cursor(page, '#game', true, `${label}: next round cursor hidden`);
     await exitFullscreen(page);
     await geometryAndAim(page, '#game', '__smokeGame', `${label}: aiming after fullscreen exit`, false);
+    assert.equal(await page.evaluate(() => window.__smokeGame.integrity().healthy), true, `${label}: integrity survives gameplay and overlays`);
     await page.screenshot({ path: path.join(output, `${size.width}x${size.height}-${mode}.png`) });
+  } finally { await context.close(); }
+}
+
+async function unmodifiedStartup(mode) {
+  const context = await contextFor({ width: 1280, height: 720 });
+  const label = `${mode}: unmodified source and CSP`;
+  try {
+    const { page } = await pageFor(context, label);
+    // Serve the exact source bytes for this check, without the state hook.
+    await page.route('**/game.js*', route => route.fulfill({ contentType: 'text/javascript', body: sources['game.js'] }));
+    await page.goto(`${origin}/game.html?mode=${mode}`);
+    await page.waitForFunction(() => document.querySelector('#game')?.width === 1152);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.evaluate(() => typeof window.__smokeGame), 'undefined', 'Pristine startup must have no injected game hook');
+    const render = await page.locator('#game').evaluate(canvas => {
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const colors = new Set();
+      for (let i = 0; i < pixels.length; i += 64) colors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]},${pixels[i + 3]}`);
+      return { width: canvas.width, height: canvas.height, sampledColors: colors.size };
+    });
+    assert.ok(render.sampledColors > 20, `${label}: game paints varied maze/tank pixels`);
+    await page.keyboard.press('p');
+    await page.locator('#pausePanel').waitFor({ state: 'visible' });
+    await page.locator('#resumeBtn').click();
+    await page.locator('#pausePanel').waitFor({ state: 'hidden' });
+    assert.deepEqual(result.errors.filter(entry => entry.label === label), [], 'Pristine startup has no script or CSP errors');
+    assert.deepEqual(result.warnings.filter(entry => entry.label === label), [], 'Pristine startup has no integrity warnings');
+    pass(label, render);
   } finally { await context.close(); }
 }
 
@@ -273,17 +329,46 @@ async function multiplayer(size, activeServer) {
     await cursor(a.page, '#mpGame', true, `${label}: active fullscreen cursor hidden`);
     const initial = a.received.filter(m => m.type === 'state').at(-1).self;
     await a.page.locator('#mpGame').focus();
-    await a.page.keyboard.down('d'); await sleep(160); await a.page.keyboard.up('d');
-    await until(() => a.received.slice(markers[0]).some(m => m.type === 'state' && Math.hypot(m.self.x - initial.x, m.self.y - initial.y) > 1), 'browser movement reaches server');
-    const current = a.received.filter(m => m.type === 'state').at(-1).self;
+    // Shoot from the spawn cell's center before testing movement. After moving
+    // alongside a maze corner, even an open cell edge need not give a bullet
+    // enough clearance to survive until the next network snapshot.
+    const current = initial;
     const maze = a.received.filter(m => m.type === 'game_start').at(-1).maze;
     const cell = maze[Math.floor(current.y / 64) * 18 + Math.floor(current.x / 64)];
     const [dx, dy] = [[0, -1], [1, 0], [0, 1], [-1, 0]][cell.walls.findIndex(wall => !wall)];
     const box = await a.page.locator('#mpGame').boundingBox();
     await a.page.mouse.move(box.x + (current.x + dx * 60) / 1152 * box.width, box.y + (current.y + dy * 60) / 768 * box.height);
+    // Mouse input reaches the visual turret on a frame and then the network
+    // sender. Wait for that real outgoing angle before firing; an immediate
+    // keydown can otherwise fire along the preceding geometry-test direction.
+    const aimTarget = await a.page.evaluate(() => window.__smokeMulti.mouse());
+    try {
+      await until(() => {
+        const sent = a.sent.filter(m => m.type === 'client_state').at(-1)?.state;
+        if (!sent) return false;
+        // The visual tank may be ahead of the last server snapshot. Use its
+        // actual outgoing position rather than assuming snapshot equality.
+        const intendedAngle = Math.atan2(aimTarget.y - sent.y, aimTarget.x - sent.x);
+        return Math.abs(Math.atan2(Math.sin(sent.turretAngle - intendedAngle), Math.cos(sent.turretAngle - intendedAngle))) < 0.01;
+      }, 'browser aim reaches outgoing client state');
+    } catch (error) {
+      result.aimFailure = { label, current, cell, direction: { dx, dy }, aimTarget,
+        sent: a.sent.filter(m => m.type === 'client_state').slice(-5) };
+      throw error;
+    }
     const shotMarker = a.received.length;
+    const sentShotMarker = a.sent.length;
     await a.page.keyboard.down('Space'); await sleep(250); await a.page.keyboard.up('Space');
-    await until(() => a.received.slice(shotMarker).some(m => m.type === 'state' && m.bullets?.some(bullet => bullet.ownerId === current.id)), 'actual browser shot in server snapshot');
+    try {
+      await until(() => a.received.slice(shotMarker).some(m => m.type === 'state' && m.bullets?.some(bullet => bullet.ownerId === current.id)), 'actual browser shot in server snapshot');
+    } catch (error) {
+      result.shotFailure = { label, current, cell, direction: { dx, dy },
+        sent: a.sent.slice(sentShotMarker).filter(m => m.type === 'client_state').slice(0, 15),
+        received: a.received.slice(shotMarker).filter(m => m.type === 'state').slice(0, 15) };
+      throw error;
+    }
+    await a.page.keyboard.down('d'); await sleep(160); await a.page.keyboard.up('d');
+    await until(() => a.received.slice(markers[0]).some(m => m.type === 'state' && Math.hypot(m.self.x - initial.x, m.self.y - initial.y) > 1), 'browser movement reaches server');
     pass(`${label}: real create/join/start/move/shoot`, { players: 2 });
     await b.page.evaluate(() => window.__smokeMulti.leave());
     await a.page.locator('#roundPanel').waitFor({ state: 'visible' });
@@ -324,6 +409,7 @@ async function main() {
   let activeServer = await startServer();
   browser = await chromium.launch({ headless: true, ...(process.env.CHROME_EXECUTABLE ? { executablePath: process.env.CHROME_EXECUTABLE } : {}) });
   result.browser = browser.version();
+  for (const mode of ['classic', 'infinite']) await unmodifiedStartup(mode);
   for (const size of [{ width: 1280, height: 720 }, { width: 900, height: 1200 }]) {
     for (const mode of ['classic', 'infinite']) await singlePlayer(size, mode);
     activeServer = await multiplayer(size, activeServer);

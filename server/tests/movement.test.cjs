@@ -10,12 +10,13 @@ function game() {
   const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
   const sandbox = {
     express: Object.assign(() => ({ use() {}, get() {} }), { json() {} }),
+    createSecureLeaderboardRouter() {},
     createServer: () => ({ listen() {} }), randomUUID,
     WebSocketServer: class { on() {} }, WebSocket: { OPEN: 1 },
     process: { env: {} }, setInterval() {}, Date: { now: () => now }, console,
   };
   vm.createContext(sandbox);
-  vm.runInContext(source.replace(/^import .*;\n/gm, '') +
+  vm.runInContext(source.replace(/^import [\s\S]*?;\n/gm, '') +
     '\nglobalThis.game = { makePlayer, makeRoom, handleMessage, resetRoomForGame };', sandbox);
   const api = sandbox.game;
   const player = api.makePlayer({ readyState: 1, send() {} }, 'Movement test');

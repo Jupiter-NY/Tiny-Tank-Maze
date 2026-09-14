@@ -1,5 +1,7 @@
 # Multiplayer v5.8.2 release status
 
+September 14 review: the reconciled Obfuscated client and collection landing page are a new candidate, not a production release. [SEPTEMBER_14_HANDOFF.md](SEPTEMBER_14_HANDOFF.md) records the verification and required Render/Supabase work. This review observed that the production root still serves the tank menu and `/TinyTanks` returns 404; it did not replace production.
+
 September 10 development note: `NolansAdditions` now contains a separate single-player 5.17.1 / multiplayer 5.9.1 candidate. See [NOLANS_ADDITIONS_HANDOFF.md](NOLANS_ADDITIONS_HANDOFF.md). The release history below describes the deployed September 6 version; the new branch has not been deployed by this follow-up.
 
 Updated September 6, 2026, at the parent/project publisher's request.

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/reliability.test.cjs tests/movement.test.cjs ../tests/client-recovery.test.cjs ../tests/fog-visibility.test.cjs ../tests/singleplayer-combat.test.cjs",
+    "test": "node --test tests/reliability.test.cjs tests/movement.test.cjs tests/secure-leaderboard.test.cjs ../tests/client-recovery.test.cjs ../tests/fog-visibility.test.cjs ../tests/singleplayer-combat.test.cjs ../tests/leaderboard-client.test.cjs",
     "test:browser": "node ../tests/browser-smoke.cjs"
   },
   "engines": {

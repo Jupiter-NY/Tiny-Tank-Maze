@@ -4,11 +4,35 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const vm = require("node:vm");
 
-async function loadGame() {
+// This map targets Nolan's shipped obfuscated closure, not the unused decoy
+// names at the start of game.js. No readable replacement client is evaluated.
+const gameBindings = {
+  roundNumber: "_0xd7dba78", rollEnemyTraits: "_0xea262dc", spawnEnemies: "_0x8007ebf",
+  wallRects: "_0x6bc6934", wallSegments: "_0x8d03d7e", player: "_0x5aaf408",
+  enemies: "_0xfa3e6d8", bullets: "_0xe317ccc", updateEnemy: "_0xdb7e120", shoot: "_0xe5dcf37",
+  applyEnemyPoison: "_0xcfd2888", applyPoison: "_0xf219e09", pauseGame: "_0x727fcc7",
+  gameNowSeconds: "_0x33442d3", update: "_0x4b64fc6", resumeGame: "_0xd73f152",
+  getUpgradeEffectText: "_0x00c6bec", startGame: "_0x60bae0d", endRound: "_0xfc96a35",
+  checkpointRun: "_0xd7ef6fa", validateIntegrity: "_0xc5a8453", integrityFailed: "_0xaec8094",
+  draw: "_0x9607da8", submitCurrentScore: "_0xfafa141", ctx: "_0x6395651",
+  activeRun: "_0xf620c9b", pendingCheckpoint: "_0xd044966",
+};
+
+async function loadGame({ mode = "infinite", leaderboard } = {}) {
   let time = 10000;
   const elements = new Map();
+  class CanvasRenderingContext2D {
+    measureText(text) { return { width: String(text).length * 7 }; }
+    createRadialGradient() { return { addColorStop() {} }; }
+  }
+  for (const name of ["save", "restore", "beginPath", "moveTo", "lineTo", "closePath", "clip", "clearRect",
+    "fillRect", "strokeRect", "drawImage", "arc", "fill", "stroke", "fillText", "setTransform", "translate",
+    "rotate", "rect", "roundRect", "quadraticCurveTo", "bezierCurveTo", "setLineDash"]) {
+    CanvasRenderingContext2D.prototype[name] = function () {};
+  }
   function element() {
     const classes = new Set(["hidden"]);
+    const context = new CanvasRenderingContext2D();
     return {
       width: 1152, height: 768, textContent: "", children: [],
       classList: {
@@ -18,24 +42,154 @@ async function loadGame() {
       },
       addEventListener() {}, setAttribute() {}, focus() {}, closest() { return this; },
       append(...children) { this.children.push(...children); },
-      replaceChildren() { this.children = []; }, getContext() { return {}; },
+      replaceChildren() { this.children = []; }, getContext() { return context; },
     };
   }
   const sandbox = {
-    console, URLSearchParams, performance: { now: () => time },
+    console, URLSearchParams, atob, TextDecoder, CanvasRenderingContext2D, performance: { now: () => time },
     document: {
       getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
       createElement: element, addEventListener() {},
     },
-    window: { location: { search: "?mode=infinite" }, addEventListener() {}, TankLeaderboard: { isConfigured: () => false } },
+    window: { location: { search: `?mode=${mode}` }, addEventListener() {}, TankLeaderboard: leaderboard || { isConfigured: () => false } },
     localStorage: { getItem: () => null, setItem() {} },
     MutationObserver: class { observe() {} }, requestAnimationFrame() {}, setTimeout() {},
   };
   vm.createContext(sandbox);
   const source = await fs.readFile(path.resolve(__dirname, "../game.js"), "utf8");
   vm.runInContext(source.replace(/\}\)\(\);\s*$/, "globalThis.game = { evaluate: code => eval(code) };\n})();"), sandbox);
-  return { evaluate: code => sandbox.game.evaluate(code), advance: ms => { time += ms; } };
+  const bindingPattern = new RegExp(`\\b(${Object.keys(gameBindings).join("|")})\\b`, "g");
+  return {
+    evaluate: code => sandbox.game.evaluate(code.replace(bindingPattern, name => gameBindings[name])),
+    advance: ms => { time += ms; }, elements,
+  };
 }
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function flushPromises() {
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+}
+
+test("Classic score freezes matching elapsed time and fractional HP before a delayed checkpoint", async () => {
+  const checkpoint = deferred();
+  const submissions = [];
+  const game = await loadGame({ mode: "classic", leaderboard: {
+    isConfigured: () => true, canSubmitSecurely: () => true,
+    beginRun: async () => ({ runId: "first" }), checkpointRun: () => checkpoint.promise,
+    submitScore: async value => { submissions.push(value); },
+  } });
+  await flushPromises();
+  game.advance(15000);
+  game.evaluate("checkpointRun();");
+  await flushPromises();
+  game.advance(75250.4);
+  game.evaluate("player.points = 600; player.score = 6; player.hp = 74.6; endRound(true);");
+  const shown = Number(game.elements.get("finalScore").textContent.replaceAll(",", ""));
+  game.advance(7000);
+  checkpoint.resolve();
+  await flushPromises();
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].elapsedMs, 90250);
+  assert.equal(submissions[0].hp, 74.6);
+  assert.equal(shown, 600 + 750 + Math.floor(74.6 * 2) + Math.floor((120 - 90.25) * 4));
+  assert.equal(submissions[0].score, shown);
+});
+
+test("a delayed finish submits the completed run even after Play Again", async () => {
+  const checkpoint = deferred();
+  const submissions = [];
+  let runs = 0;
+  const game = await loadGame({ leaderboard: {
+    isConfigured: () => true, canSubmitSecurely: () => true,
+    beginRun: async () => ({ runId: `run-${++runs}` }), checkpointRun: () => checkpoint.promise,
+    submitScore: async value => { submissions.push(value); },
+  } });
+  await flushPromises();
+  game.advance(15000);
+  game.evaluate("checkpointRun();");
+  await flushPromises();
+  game.evaluate("roundNumber = 3; player.score = 14; player.points = 1510; player.hp = 0; endRound(false); startGame();");
+  await flushPromises();
+  checkpoint.resolve();
+  await flushPromises();
+  assert.equal(submissions.length, 1);
+  assert.equal(submissions[0].run.runId, "run-1");
+  assert.equal(submissions[0].wave, 3);
+  assert.equal(submissions[0].kills, 14);
+  assert.equal(submissions[0].points, 1510);
+  assert.equal(submissions[0].hp, 0);
+  assert.equal(submissions[0].elapsedMs, 15000);
+});
+
+test("a checkpoint waiting for beginRun keeps the state sampled at its elapsed time", async () => {
+  const begin = deferred();
+  const checkpoints = [];
+  const game = await loadGame({ leaderboard: {
+    isConfigured: () => true, canSubmitSecurely: () => true, beginRun: () => begin.promise,
+    checkpointRun: async (run, value) => { checkpoints.push({ run, value }); }, submitScore: async () => {},
+  } });
+  game.advance(15000);
+  game.evaluate("roundNumber = 2; player.score = 6; player.points = 650; checkpointRun();");
+  game.advance(5000);
+  game.evaluate("roundNumber = 3; player.score = 14; player.points = 1550;");
+  begin.resolve({ runId: "first" });
+  await flushPromises();
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].value.elapsedMs, 15000);
+  assert.equal(checkpoints[0].value.wave, 2);
+  assert.equal(checkpoints[0].value.kills, 6);
+  assert.equal(checkpoints[0].value.points, 650);
+});
+
+test("old begin and checkpoint completions cannot replace the new run's handles", async () => {
+  const oldBegin = deferred(), newBegin = deferred(), oldCheckpoint = deferred(), newCheckpoint = deferred();
+  let runs = 0;
+  const game = await loadGame({ leaderboard: {
+    isConfigured: () => true, canSubmitSecurely: () => true,
+    beginRun: () => (++runs === 1 ? oldBegin.promise : newBegin.promise),
+    checkpointRun: run => run.runId === "old" ? oldCheckpoint.promise : newCheckpoint.promise,
+    submitScore: async () => {},
+  } });
+  game.advance(15000);
+  game.evaluate("checkpointRun(); startGame();");
+  newBegin.resolve({ runId: "new" });
+  await flushPromises();
+  game.advance(15000);
+  game.evaluate("checkpointRun();");
+  await flushPromises();
+  const current = game.evaluate("pendingCheckpoint");
+  oldBegin.resolve({ runId: "old" });
+  await flushPromises();
+  oldCheckpoint.resolve();
+  await flushPromises();
+  assert.equal(game.evaluate("activeRun.runId"), "new");
+  assert.equal(game.evaluate("pendingCheckpoint"), current);
+  newCheckpoint.resolve();
+  await flushPromises();
+  assert.equal(game.evaluate("pendingCheckpoint"), null);
+});
+
+test("normal rendering and pause/resume preserve the renderer integrity guard", async () => {
+  const game = await loadGame();
+  assert.equal(game.evaluate("validateIntegrity()"), true);
+  game.evaluate("draw(); pauseGame(); draw(); resumeGame(); draw();");
+  assert.equal(game.evaluate("validateIntegrity()"), true);
+  assert.equal(game.evaluate("integrityFailed"), false);
+});
+
+test("Canvas method replacement remains rejected and cannot save a score", async () => {
+  const game = await loadGame();
+  game.evaluate("ctx.fillRect = function () {}; ");
+  assert.equal(game.evaluate("validateIntegrity()"), false);
+  assert.equal(game.evaluate("integrityFailed"), true);
+  const result = await game.evaluate("submitCurrentScore(600, true)");
+  assert.equal(result.reason, "integrity-failed");
+});
 
 async function poisonEnemyGame() {
   const game = await loadGame();

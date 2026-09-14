@@ -36,7 +36,7 @@ create index if not exists leaderboard_infinite_rank_idx
 alter table public.leaderboard enable row level security;
 
 revoke all on table public.leaderboard from anon, authenticated;
-grant select, insert on table public.leaderboard to anon, authenticated;
+grant select on table public.leaderboard to anon, authenticated;
 
 drop policy if exists "Public can read leaderboard" on public.leaderboard;
 create policy "Public can read leaderboard"
@@ -46,16 +46,5 @@ create policy "Public can read leaderboard"
   using (true);
 
 drop policy if exists "Public can submit leaderboard scores" on public.leaderboard;
-create policy "Public can submit leaderboard scores"
-  on public.leaderboard
-  for insert
-  to anon, authenticated
-  with check (
-    char_length(trim(player_name)) between 1 and 16
-    and mode in ('classic', 'infinite')
-    and score between 0 and 100000000
-    and wave between 1 and 100000
-    and kills between 0 and 1000000
-  );
-
--- Intentionally no UPDATE or DELETE grants/policies for browser users.
+-- INSERT uses the server's secret/service_role key after run validation.
+-- Intentionally no INSERT, UPDATE or DELETE grants/policies for browser users.

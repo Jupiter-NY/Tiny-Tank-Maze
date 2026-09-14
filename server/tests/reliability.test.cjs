@@ -16,6 +16,7 @@ async function loadGame() {
   const source = await fs.readFile(serverPath, "utf8");
   const sandbox = {
     express: Object.assign(() => ({ use() {}, get() {} }), { json() {} }),
+    createSecureLeaderboardRouter() {},
     createServer: () => ({ listen() {} }),
     randomUUID,
     WebSocketServer: class { on() {} },
@@ -26,7 +27,7 @@ async function loadGame() {
     console,
   };
   vm.createContext(sandbox);
-  vm.runInContext(source.replace(/^import .*;\n/gm, "") +
+  vm.runInContext(source.replace(/^import [\s\S]*?;\n/gm, "") +
     "\nglobalThis.game = { makePlayer, makeRoom, damagePlayer, explodeGrenade, updateRoom };", sandbox);
   return sandbox.game;
 }
@@ -133,6 +134,7 @@ async function startLocalServer(t) {
     `const { WebSocketServer, WebSocket } = require("ws");\n`;
   const localSource = imports + source
     .replace(/^import .* from "(?:express|ws)";\n/gm, "")
+    .replace('"./secure-leaderboard.js"', JSON.stringify(pathToFileURL(path.resolve(__dirname, "../secure-leaderboard.js")).href))
     .replace('server.listen(PORT, "0.0.0.0"', 'server.listen(PORT, "127.0.0.1"')
     .replace(/console\.log\(`Tiny Tank Maze server listening[^\n]+/, 'console.log("TEST_PORT=" + server.address().port);');
   await fs.writeFile(temporaryServer, localSource);

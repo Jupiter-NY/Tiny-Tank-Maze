@@ -465,17 +465,22 @@
             _0xa572226 = Promise.resolve(null);
             return;
         }
-        _0xa572226 = window.TankLeaderboard
+        const _0x14e589a = window.TankLeaderboard
             .beginRun(_0x83a19cf)
             .then((_0x1bfe51a) => {
-            _0xf620c9b = _0x1bfe51a || null;
-            return _0xf620c9b;
+            if (_0xa572226 === _0x14e589a) {
+                _0xf620c9b = _0x1bfe51a || null;
+            }
+            return _0x1bfe51a || null;
         })
             .catch((_0x680686c) => {
             console.warn(_0x7bb35f9(92), _0x680686c);
-            _0xf620c9b = null;
+            if (_0xa572226 === _0x14e589a) {
+                _0xf620c9b = null;
+            }
             return null;
         });
+        _0xa572226 = _0x14e589a;
     }
     function _0xd7ef6fa() {
         if (!_0x7532df0 || _0xb961bfa || _0x989bb80 || _0xaec8094 ||
@@ -488,27 +493,34 @@
         if (_0xd044966)
             return;
         _0x2df05fb = _0xddf6fd0;
-        _0xd044966 = Promise.resolve(_0xa572226)
+        const _0xc530b29 = _0xa572226;
+        const _0x3fa7238 = {
+            wave: _0xd7dba78,
+            kills: _0x5aaf408.score,
+            points: Math.max(0, Math.round(_0x5aaf408.points)),
+            elapsedMs: _0xddf6fd0,
+        };
+        const _0x2a613fe = Promise.resolve(_0xc530b29)
             .then((_0x3c72182) => {
             if (!_0x3c72182)
                 return null;
-            return window.TankLeaderboard.checkpointRun(_0x3c72182, {
-                wave: _0xd7dba78,
-                kills: _0x5aaf408.score,
-                points: Math.max(0, Math.round(_0x5aaf408.points)),
-                elapsedMs: _0xddf6fd0,
-            });
+            return window.TankLeaderboard.checkpointRun(_0x3c72182, _0x3fa7238);
         })
             .catch((_0xecf0870) => {
-            _0x2df05fb = Math.max(0, _0xddf6fd0 - 10000);
+            if (_0xa572226 === _0xc530b29) {
+                _0x2df05fb = Math.max(0, _0xddf6fd0 - 10000);
+            }
             console.warn(_0x7bb35f9(93), _0xecf0870);
             return null;
         })
             .finally(() => {
-            _0xd044966 = null;
+            if (_0xd044966 === _0x2a613fe) {
+                _0xd044966 = null;
+            }
         });
+        _0xd044966 = _0x2a613fe;
     }
-    async function _0xfafa141(_0x1f70e71, _0x87d15c4) {
+    async function _0xfafa141(_0x1f70e71, _0x87d15c4, _0x4482db9 = _0x47d7c65()) {
         if (_0xaec8094) {
             return { global: false, reason: _0x7bb35f9(94) };
         }
@@ -519,25 +531,30 @@
         if (!window.TankLeaderboard?.canSubmitSecurely?.()) {
             return { global: false, reason: _0x7bb35f9(96) };
         }
+        const _0x6bd4b08 = _0xa572226;
+        const _0xa3ddfd7 = _0xd044966;
+        const _0xb57f305 = {
+            playerName: _0x25a7a50,
+            mode: _0x83a19cf,
+            score: _0x1f70e71,
+            points: Math.max(0, Math.round(_0x5aaf408.points)),
+            wave: _0xd7dba78,
+            kills: _0x5aaf408.score,
+            cleared: _0x87d15c4,
+            hp: Math.max(0, _0x5aaf408.hp),
+            elapsedMs: _0x4482db9,
+        };
         try {
-            if (_0xd044966) {
-                await _0xd044966;
+            if (_0xa3ddfd7) {
+                await _0xa3ddfd7;
             }
-            const _0x953df61 = await Promise.resolve(_0xa572226);
+            const _0x953df61 = await Promise.resolve(_0x6bd4b08);
             if (!_0x953df61) {
                 return { global: false, reason: _0x7bb35f9(97) };
             }
             await window.TankLeaderboard.submitScore({
+                ..._0xb57f305,
                 run: _0x953df61,
-                playerName: _0x25a7a50,
-                mode: _0x83a19cf,
-                score: _0x1f70e71,
-                points: Math.max(0, Math.round(_0x5aaf408.points)),
-                wave: _0xd7dba78,
-                kills: _0x5aaf408.score,
-                cleared: _0x87d15c4,
-                hp: Math.max(0, Math.round(_0x5aaf408.hp)),
-                elapsedMs: _0x47d7c65(),
             });
             return { global: true };
         }
@@ -617,6 +634,9 @@
     function _0xcc76ffe(_0x929590b) {
         return Number(_0x5aaf408?.mods?.[_0x929590b] || 0);
     }
+    function _0x891fab1(_0x4c925c1) {
+        return 4 + _0x4c925c1 * 1.5;
+    }
     function _0x00c6bec(_0xe76acc0, _0xd59bc6a = _0xcc76ffe(_0xe76acc0) + 1) {
         if (_0xe76acc0 === _0x7bb35f9(61)) {
             const _0x20b67da = Math.pow(0.82, _0xd59bc6a);
@@ -645,7 +665,7 @@
         }
         if (_0xe76acc0 === _0x7bb35f9(82)) {
             const _0xfd728ff = 1 + Math.min(3, _0xd59bc6a) * 2;
-            const _0xda0e0ec = 5 + Math.min(3, _0xd59bc6a) * 4;
+            const _0xda0e0ec = Math.min(3, _0xd59bc6a) * _0x891fab1(Math.min(3, _0xd59bc6a));
             return `${_0xfd728ff} bullets • 50% direct damage each • ±${_0xda0e0ec}° spread`;
         }
         if (_0xe76acc0 === _0x7bb35f9(85)) {
@@ -1203,10 +1223,12 @@
                 bounceTrait: _0x4d8f640.bounce,
                 explosiveRadius: Math.min(88, 52 + _0xd7dba78 * 2),
                 explosiveDamage: Math.round(_0x4a81eb7.damage * 0.55),
-                poisonDps: _0x4d8f640.poison
+                poisonWeaponDps: _0x4d8f640.poison
                     ? Math.min(9, 3.5 + _0xd7dba78 * 0.25)
                     : 0,
                 poisonDuration: _0x4d8f640.poison ? 3.2 : 0,
+                poisonUntil: 0,
+                poisonDps: 0,
                 bulletBounces: _0x4d8f640.bounce ? 2 : 0,
                 speed: _0x3c427d8,
                 fireCooldown: 0.5 + Math.random(),
@@ -1449,7 +1471,7 @@
                 ? 3
                 : 1;
         const _0x801bff3 = _0x751bb69 && _0x9eb628e > 0
-            ? ((4 + _0x9eb628e * 1.5) * Math.PI) / 180
+            ? (_0x891fab1(_0x9eb628e) * Math.PI) / 180
             : !_0x751bb69 && _0x4207ff2.multishotTrait
                 ? (8 * Math.PI) / 180
                 : 0;
@@ -1479,7 +1501,7 @@
                 enemyExplosionDamage: !_0x751bb69 ? _0x4207ff2.explosiveDamage || 0 : 0,
                 enemyMultishot: !_0x751bb69 && Boolean(_0x4207ff2.multishotTrait),
                 enemyPoison: !_0x751bb69 && Boolean(_0x4207ff2.poisonTrait),
-                enemyPoisonDps: !_0x751bb69 ? _0x4207ff2.poisonDps || 0 : 0,
+                enemyPoisonDps: !_0x751bb69 ? _0x4207ff2.poisonWeaponDps || 0 : 0,
                 enemyPoisonDuration: !_0x751bb69 ? _0x4207ff2.poisonDuration || 0 : 0,
                 enemyBounce: !_0x751bb69 && Boolean(_0x4207ff2.bounceTrait),
                 enemySniper: !_0x751bb69 && Boolean(_0x4207ff2.sniperTrait),
@@ -2985,11 +3007,11 @@
         _0x961d473();
         _0x13cb5fd.focus();
     }
-    function _0x2d4e2b6(_0x8a13e0d) {
+    function _0x2d4e2b6(_0x8a13e0d, _0xe2ec4fb = _0x47d7c65()) {
         if (_0x83a19cf === _0x7bb35f9(59)) {
             return Math.max(0, Math.round(_0x5aaf408.points));
         }
-        const _0x9acd47f = Math.max(0, (_0xa8e01b3() - _0x5847806) / 1000);
+        const _0x9acd47f = _0xe2ec4fb / 1000;
         const _0x6097d3e = _0x5aaf408.points;
         const _0x6a8aa9c = _0x8a13e0d ? 750 : 0;
         const _0xd467882 = _0x8a13e0d ? Math.floor(Math.max(0, _0x5aaf408.hp) * 2) : 0;
@@ -2999,6 +3021,8 @@
     function _0xfc96a35(_0x6e4e0ed) {
         if (!_0x5aaf408 || (!_0x7532df0 && !_0x989bb80))
             return;
+        const _0xe9a780d = _0x47d7c65();
+        const _0xc4fbc1d = _0xa572226;
         _0x7532df0 = false;
         _0xb961bfa = false;
         _0x29ac593 = 0;
@@ -3010,8 +3034,8 @@
             _0x7a08b50[_0x8ac2cc2] = false;
         }
         _0x2ffe413.classList.add(_0x7bb35f9(40));
-        const _0x869df77 = _0x2d4e2b6(_0x6e4e0ed);
-        const _0xb005a1f = _0xfafa141(_0x869df77, _0x6e4e0ed);
+        const _0x869df77 = _0x2d4e2b6(_0x6e4e0ed, _0xe9a780d);
+        const _0xb005a1f = _0xfafa141(_0x869df77, _0x6e4e0ed, _0xe9a780d);
         if (_0x83a19cf === _0x7bb35f9(59)) {
             _0x741aeb8.textContent = _0x7bb35f9(208);
             _0xaf49bbe.textContent = _0x7bb35f9(209);
@@ -3032,6 +3056,8 @@
             : _0x7bb35f9(212);
         _0xb21c985.classList.remove(_0x7bb35f9(40));
         _0xb005a1f.then((_0xad7effd) => {
+            if (_0xa572226 !== _0xc4fbc1d)
+                return;
             if (_0xad7effd.global) {
                 _0x2da8142.textContent = _0xda37e62 ? `${_0xda37e62} • Global score submitted`
                     : _0x7bb35f9(213);

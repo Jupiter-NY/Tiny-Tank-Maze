@@ -54,20 +54,27 @@
   }
 
   async function parseResponse(response) {
+    const text = response.status === 204 ? "" : await response.text();
+    let body = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      // Proxy errors may return text or HTML instead of JSON. Read the body
+      // once so its HTTP status is preserved for the game's error message.
+    }
+
     if (response.ok) {
-      if (response.status === 204) return null;
-      const text = await response.text();
-      return text ? JSON.parse(text) : null;
+      if (text && body === null) throw new Error("Invalid leaderboard response.");
+      return body;
     }
 
     let detail = "";
     let code = "";
-    try {
-      const body = await response.json();
+    if (body && typeof body === "object") {
       detail = body.message || body.error || body.hint || body.details || "";
       code = body.code || "";
-    } catch {
-      detail = await response.text();
+    } else {
+      detail = text;
     }
 
     const error = new Error(

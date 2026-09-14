@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="560" viewBox="0 0 840 560" fill="none">
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" stroke="#49604c" stroke-opacity=".18"/></pattern>
+    <radialGradient id="light"><stop stop-color="#436244" stop-opacity=".75"/><stop offset="1" stop-color="#142522" stop-opacity="0"/></radialGradient>
+    <linearGradient id="vignette" x1="420" y1="0" x2="420" y2="560" gradientUnits="userSpaceOnUse"><stop stop-color="#12201f" stop-opacity=".8"/><stop offset=".4" stop-color="#142522" stop-opacity="0"/><stop offset="1" stop-color="#12201f" stop-opacity=".75"/></linearGradient>
+    <g id="tank"><rect x="-26" y="-23" width="52" height="12" rx="3" fill="#284932"/><rect x="-26" y="11" width="52" height="12" rx="3" fill="#284932"/><path d="M-17-22v10M-6-22v10M5-22v10M16-22v10M-17 12v10M-6 12v10M5 12v10M16 12v10" stroke="#658657" stroke-width="2"/><rect x="-23" y="-15" width="45" height="30" rx="7" fill="#b0df6c"/><rect x="-14" y="-12" width="27" height="23" rx="5" fill="#d6ee90"/><circle r="9" fill="#8bb54f"/><path d="M2 0h34" stroke="#d8efa0" stroke-width="9" stroke-linecap="round"/></g>
+    <g id="enemy"><rect x="-21" y="-19" width="42" height="10" rx="3" fill="#753d36"/><rect x="-21" y="9" width="42" height="10" rx="3" fill="#753d36"/><rect x="-18" y="-12" width="36" height="24" rx="5" fill="#c47a65"/><circle r="8" fill="#df9d81"/><path d="M0 0h28" stroke="#e6aa8d" stroke-width="7" stroke-linecap="round"/></g>
+  </defs>
+  <path fill="#142522" d="M0 0h840v560H0z"/><path fill="url(#grid)" d="M0 0h840v560H0z"/><ellipse cx="356" cy="298" rx="330" ry="285" fill="url(#light)"/>
+  <g stroke="#0d1919" stroke-width="23" stroke-linejoin="round"><path d="M-40 113h193v90h122V95h185v84h132V81h135M65 309h90v130h177v-72h138v97h140v-93h157M-30 484h108M359 179v91h177v-11h96v53h127M70 78v76M247 508v75M681 177v78h130M539 529v49M757 389v87"/></g>
+  <g stroke="#4b6750" stroke-width="14" stroke-linejoin="round"><path d="M-40 107h193v90h122V89h185v84h132V75h135M65 303h90v130h177v-72h138v97h140v-93h157M-30 478h108M359 173v91h177v-11h96v53h127M70 72v76M247 502v75M681 171v78h130M539 523v49M757 383v87"/></g>
+  <g stroke="#70855e" stroke-opacity=".5" stroke-width="2"><path d="M-40 100h200v90h61M282 89h171v77h126M72 296h90v130h163v-72h152v97h126M366 174v83h163M688 171v71h123"/></g>
+  <path d="M355 310l239-15-14 49z" fill="#c7e77a" opacity=".08"/><g transform="translate(350 315) rotate(-5)"><use href="#tank"/></g>
+  <g transform="translate(568 216) rotate(178)" opacity=".83"><use href="#enemy"/></g><g transform="translate(686 425) rotate(-110)" opacity=".66"><use href="#enemy"/></g>
+  <path d="M411 310l14-1M446 307l14-1M481 305l14-1" stroke="#d1e58c" stroke-width="4" stroke-linecap="round"/>
+  <g transform="translate(224 285)"><circle r="12" fill="#1c3848"/><path d="M0-6v12M-6 0H6" stroke="#75b5c0" stroke-width="3"/></g>
+  <g transform="translate(485 396)"><path d="M0-10l10 10L0 10-10 0z" fill="#dbb263"/><path d="M-2-5l-2 6h5L0 6l5-8H0l2-3" fill="#634e31"/></g>
+  <path fill="url(#vignette)" d="M0 0h840v560H0z"/>
+  <g opacity=".65" fill="#92ac7d"><circle cx="105" cy="236" r="2"/><circle cx="616" cy="148" r="2"/><circle cx="487" cy="119" r="1.5"/><circle cx="295" cy="475" r="1.5"/></g>
+</svg>
