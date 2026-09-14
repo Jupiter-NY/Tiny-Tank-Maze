@@ -139,7 +139,8 @@ async function startLocalServer(t) {
     .replace(/console\.log\(`Tiny Tank Maze server listening[^\n]+/, 'console.log("TEST_PORT=" + server.address().port);');
   await fs.writeFile(temporaryServer, localSource);
   const child = spawn(process.execPath, [temporaryServer], {
-    env: { ...process.env, PORT: "0", ALLOWED_ORIGINS: "" },
+    env: { ...process.env, PORT: "0", ALLOWED_ORIGINS: "", RENDER_GIT_COMMIT: "a".repeat(40),
+      LEADERBOARD_HMAC_SECRET: "", SUPABASE_URL: "", SUPABASE_SECRET_KEY: "", SUPABASE_SERVICE_ROLE_KEY: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -264,4 +265,9 @@ test("a malformed connection is closed while an unrelated match continues", { ti
   assert.equal(host.ws.readyState, WebSocket.OPEN);
   assert.equal(guest.ws.readyState, WebSocket.OPEN);
   assert.ok(!stderr().includes("Unhandled 'error' event"), stderr());
+  const healthResponse = await fetch(`http://127.0.0.1:${port}/health`);
+  assert.equal(healthResponse.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await healthResponse.json(), {
+    ok: true, commit: "a".repeat(40), leaderboard: { configured: false },
+  });
 });

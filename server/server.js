@@ -40,12 +40,8 @@ const rooms = new Map();
 const clients = new Map();
 
 app.use(express.json());
-app.use(
-  "/api/leaderboard",
-  createSecureLeaderboardRouter({
-    allowedOrigins
-  })
-);
+const leaderboardRouter = createSecureLeaderboardRouter({ allowedOrigins });
+app.use("/api/leaderboard", leaderboardRouter);
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
@@ -54,7 +50,17 @@ app.get("/", (_req, res) => {
     clients: clients.size,
   });
 });
-app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/health", async (req, res) => {
+  const commit = String(process.env.RENDER_GIT_COMMIT || "").trim();
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    commit: /^[a-f0-9]{40}$/i.test(commit) ? commit : null,
+    leaderboard: await leaderboardRouter.readiness({
+      checkDatabase: req.query.database === "1",
+    }),
+  });
+});
 
 function nowSeconds() {
   return Date.now() / 1000;

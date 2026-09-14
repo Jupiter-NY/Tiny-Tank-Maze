@@ -94,6 +94,51 @@ export function createSecureLeaderboardRouter(options = {}) {
     );
   }
 
+  function databaseHeaders(extra = {}) {
+    const headers = { apikey: supabaseKey, ...extra };
+    // Legacy service_role JWTs use Authorization; modern sb_secret_ keys use apikey.
+    if (supabaseKey.startsWith("eyJ")) headers.Authorization = `Bearer ${supabaseKey}`;
+    return headers;
+  }
+
+  let databaseReadiness = null;
+  let databaseCheck = null;
+  router.readiness = async ({ checkDatabase = false } = {}) => {
+    const status = { configured: configurationReady() };
+    if (!checkDatabase) return status;
+
+    if (!status.configured) {
+      return { ...status, database: { readable: false, checkedAt: null, httpStatus: null, writePermissions: "not_checked" } };
+    }
+
+    // An explicit diagnostic can perform only a zero-row SELECT. Cache both
+    // successes and failures, and share in-flight checks to bound public traffic.
+    if (!databaseReadiness || Date.now() - databaseReadiness.checkedAt >= 30_000) {
+      if (!databaseCheck) {
+        databaseCheck = (async () => {
+          let readable = false;
+          let httpStatus = null;
+          try {
+            const response = await fetch(`${supabaseUrl}/rest/v1/leaderboard?select=id&limit=0`, {
+              method: "GET",
+              headers: databaseHeaders({ Accept: "application/json" }),
+              signal: AbortSignal.timeout(5000),
+            });
+            readable = response.ok;
+            httpStatus = response.status;
+            await response.body?.cancel();
+          } catch {
+            // Never publish credentials, database errors or response contents.
+          }
+          databaseReadiness = { readable, httpStatus, checkedAt: Date.now(), writePermissions: "not_checked" };
+        })().finally(() => { databaseCheck = null; });
+      }
+      await databaseCheck;
+    }
+
+    return { ...status, database: { ...databaseReadiness } };
+  };
+
   function cors(req, res, next) {
     const origin = String(req.headers.origin || "");
 
@@ -243,17 +288,10 @@ export function createSecureLeaderboardRouter(options = {}) {
   }
 
   async function insertLeaderboardRow(row) {
-    const headers = {
-      apikey: supabaseKey,
+    const headers = databaseHeaders({
       "Content-Type": "application/json",
       Prefer: "return=minimal",
-    };
-
-    // Legacy service_role keys are JWTs and conventionally use Authorization.
-    // Modern sb_secret_ keys are API keys and should be sent on apikey.
-    if (supabaseKey.startsWith("eyJ")) {
-      headers.Authorization = `Bearer ${supabaseKey}`;
-    }
+    });
 
     const response = await fetch(`${supabaseUrl}/rest/v1/leaderboard`, {
       method: "POST",

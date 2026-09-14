@@ -11,7 +11,7 @@ const routerPromise = import(pathToFileURL(path.join(moduleRoot, "secure-leaderb
 const origin = "https://game.example";
 const secret = "local-test-secret-never-a-production-secret";
 
-async function fixture(t, { configured = true, insert = async () => new Response(null, { status: 201 }) } = {}) {
+async function fixture(t, { configured = true, insert = async () => new Response(null, { status: 201 }), read = async () => new Response("[]", { status: 200 }) } = {}) {
   const { createSecureLeaderboardRouter } = await routerPromise;
   const saved = {};
   const env = {
@@ -26,14 +26,20 @@ async function fixture(t, { configured = true, insert = async () => new Response
   }
   const app = express();
   app.use(express.json());
-  app.use("/api/leaderboard", createSecureLeaderboardRouter({ allowedOrigins: [origin] }));
+  const router = createSecureLeaderboardRouter({ allowedOrigins: [origin] });
+  app.use("/api/leaderboard", router);
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
   const nativeFetch = global.fetch;
   const writes = [];
+  const reads = [];
   global.fetch = async (url, options) => {
+    if (String(url) === "https://database.invalid/rest/v1/leaderboard?select=id&limit=0") {
+      reads.push(options);
+      return read(reads.length, options);
+    }
     if (String(url) === "https://database.invalid/rest/v1/leaderboard") {
       writes.push(JSON.parse(options.body));
       return insert(writes.length, options);
@@ -63,7 +69,7 @@ async function fixture(t, { configured = true, insert = async () => new Response
     assert.equal(result.status, 200);
     return result.body;
   }
-  return { request, start, writes, base };
+  return { request, start, writes, reads, base, readiness: router.readiness };
 }
 
 function finalBody(run, extra = {}) {
@@ -168,5 +174,52 @@ test("allowed-origin errors remain readable and missing server secrets fail clos
   assert.equal(denied.headers.get("access-control-allow-origin"), null);
   const preflight = await fetch(`${f.base}/run/start`, { method: "OPTIONS", headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" } });
   assert.equal(preflight.status, 204);
+  assert.equal(f.writes.length, 0);
+});
+
+test("readiness is local by default and explicit checks share a cached zero-row GET", async (t) => {
+  let clock = Date.now();
+  t.mock.method(Date, "now", () => clock);
+  const f = await fixture(t);
+  assert.deepEqual(await f.readiness(), { configured: true });
+  assert.equal(f.reads.length, 0);
+  const [first, simultaneous] = await Promise.all([
+    f.readiness({ checkDatabase: true }), f.readiness({ checkDatabase: true }),
+  ]);
+  assert.deepEqual(first, simultaneous);
+  assert.deepEqual(first.database, { readable: true, checkedAt: clock, httpStatus: 200, writePermissions: "not_checked" });
+  assert.equal(f.reads.length, 1);
+  assert.equal(f.reads[0].method, "GET");
+  assert.ok(f.reads[0].signal instanceof AbortSignal);
+  assert.equal(f.reads[0].body, undefined);
+  assert.equal(JSON.stringify(first).includes("sb_secret"), false);
+  clock += 29999;
+  await f.readiness({ checkDatabase: true });
+  assert.equal(f.reads.length, 1);
+  clock++;
+  await f.readiness({ checkDatabase: true });
+  assert.equal(f.reads.length, 2);
+  assert.equal(f.writes.length, 0);
+});
+
+test("readiness failures expose no database response or credential and are cached", async (t) => {
+  const f = await fixture(t, { read: async () => new Response("private database diagnostic", { status: 401 }) });
+  const status = await f.readiness({ checkDatabase: true });
+  assert.equal(status.database.readable, false);
+  assert.equal(status.database.httpStatus, 401);
+  assert.equal(status.database.writePermissions, "not_checked");
+  assert.equal(JSON.stringify(status).includes("private"), false);
+  await f.readiness({ checkDatabase: true });
+  assert.equal(f.reads.length, 1);
+  assert.equal(f.writes.length, 0);
+});
+
+test("missing configuration skips the database diagnostic entirely", async (t) => {
+  const f = await fixture(t, { configured: false });
+  assert.deepEqual(await f.readiness({ checkDatabase: true }), {
+    configured: false,
+    database: { readable: false, checkedAt: null, httpStatus: null, writePermissions: "not_checked" },
+  });
+  assert.equal(f.reads.length, 0);
   assert.equal(f.writes.length, 0);
 });

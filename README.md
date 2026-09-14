@@ -1,5 +1,7 @@
 # Tiny Tank Maze
 
+**Main is the shared source for all current work.** Start new feature branches from current main. The collection lives at `littletinygames.com` and the tank game at `/TinyTanks/`. Read [MAIN_WORKFLOW.md](MAIN_WORKFLOW.md) for source layout and publishing, and [CURRENT_RELEASE.md](CURRENT_RELEASE.md) for verified deployment status. Earlier dated notes below describe historical candidates.
+
 September 14 candidate: Nolan's obfuscated single-player **5.22.1**, multiplayer **5.9.1**, and the Little Tiny Games collection at `/` with the game at `/TinyTanks/`. Read [SEPTEMBER_14_HANDOFF.md](SEPTEMBER_14_HANDOFF.md) for tested fixes, packaging and the pending backend/database release steps. This candidate has not replaced the production site.
 
 This branch's September 10 candidate includes Nolan's new features plus the reviewed fixes: single-player **5.17.1**, multiplayer **5.9.1**. Read [NOLANS_ADDITIONS_HANDOFF.md](NOLANS_ADDITIONS_HANDOFF.md) before further edits. Pushing this branch does not publish it to Vercel.
