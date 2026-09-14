@@ -2,6 +2,9 @@ import express from "express";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
+import {
+  createSecureLeaderboardRouter
+} from "./secure-leaderboard.js";
 
 const app = express();
 const server = createServer(app);
@@ -37,6 +40,12 @@ const rooms = new Map();
 const clients = new Map();
 
 app.use(express.json());
+app.use(
+  "/api/leaderboard",
+  createSecureLeaderboardRouter({
+    allowedOrigins
+  })
+);
 app.get("/", (_req, res) => {
   res.json({
     ok: true,
