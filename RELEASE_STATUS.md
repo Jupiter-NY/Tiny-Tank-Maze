@@ -1,5 +1,7 @@
 # Multiplayer v5.8.2 release status
 
+> Historical release log. The September 14 unified main release now serves the landing page at `/` and the game at `/TinyTanks/`, with the matching Render backend deployed and verified. [CURRENT_RELEASE.md](CURRENT_RELEASE.md) is the authoritative current status; candidate and deployment statements below refer to their original dates/stages.
+
 September 14 review: the reconciled Obfuscated client and collection landing page are a new candidate, not a production release. [SEPTEMBER_14_HANDOFF.md](SEPTEMBER_14_HANDOFF.md) records the verification and required Render/Supabase work. This review observed that the production root still serves the tank menu and `/TinyTanks` returns 404; it did not replace production.
 
 September 14 preview: `dpl_D8yruLoacxerh5ew9oTeN5czXmee` is READY from source `b2b92cdf4f6d4936efa5c0d63a33db28e0acc536`. See the handoff for its sign-in-protected preview URL and passed route/source checks. It is not promoted to the custom domain.

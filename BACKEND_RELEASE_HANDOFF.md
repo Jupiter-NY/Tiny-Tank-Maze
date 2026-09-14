@@ -1,5 +1,7 @@
 # Secure leaderboard backend release
 
+> Historical backend candidate notes. This work is now merged into main and deployed on Render. Production multiplayer and a normal game score submission passed. Read [CURRENT_RELEASE.md](CURRENT_RELEASE.md) for exact verification and [MAIN_WORKFLOW.md](MAIN_WORKFLOW.md) for future releases. No SQL migration was executed; live anonymous direct INSERT was already blocked.
+
 This backend-only branch starts from `origin/server` at `5e9e7bca903813b7773bf7b35c275f5095f347cc`. It accompanies the frontend reconciliation pushed to `Obfuscated` at `b2b92cdf4f6d4936efa5c0d63a33db28e0acc536` (Nolan's release plus the reviewed fixes and collection landing page). Frontend files and the multiplayer simulation are unchanged here.
 
 ## Changes and validation

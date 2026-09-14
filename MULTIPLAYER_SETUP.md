@@ -10,9 +10,9 @@ The website and multiplayer server are deployed separately:
 
 The browser connects to `wss://tiny-tank-maze.onrender.com/ws`. The custom domain stays on Vercel; using Render for multiplayer does not require moving the website or changing its domain.
 
-Use the repository's **`server` branch** as the multiplayer release source. The default `main` branch can contain a different frontend. The Vercel workflow stages browser assets manually; a GitHub push alone does not establish that the website has updated. Render's current deployment settings and deployed commit must also be checked separately.
+Use the repository's **`main` branch** as the shared release source. [MAIN_WORKFLOW.md](MAIN_WORKFLOW.md) explains the September 14 unification and the `server` compatibility mirror. The Vercel workflow stages browser assets manually; a GitHub push alone does not establish that the website has updated. Render's deployed commit must also be checked separately.
 
-This document describes the update procedure, **not confirmation that a particular commit is live**. See [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md) for the reliability changes and known limits, and [FOG_PERFORMANCE.md](FOG_PERFORMANCE.md) for the separate fog optimization and its measurements.
+This document describes the update procedure. [CURRENT_RELEASE.md](CURRENT_RELEASE.md) records the verified live version. See [MULTIPLAYER_HANDOFF.md](MULTIPLAYER_HANDOFF.md) for the reliability changes and known limits, and [FOG_PERFORMANCE.md](FOG_PERFORMANCE.md) for the separate fog optimization and its measurements.
 
 ## How multiplayer works
 
@@ -28,7 +28,7 @@ Position checks limit gross excessive movement and out-of-map jumps, but are not
 
 ## 1. Select and test the intended release
 
-Start from the intended commit on `server` and record its full Git commit ID. Check the working tree before updating it so local work is preserved.
+Start from the intended commit on `main` and record its full Git commit ID. Check the working tree before updating it so local work is preserved.
 
 With Node 20 or newer, run:
 
@@ -38,7 +38,7 @@ npm install
 npm test
 ```
 
-The current suite has **29 tests**, covering connection errors, elimination outcomes, movement validation, reconnect recovery, and fog equivalence. Keep the test result associated with the exact source commit being released.
+The September 14 release passed **60 tests**, covering connection errors, elimination outcomes, movement validation, reconnect recovery, fog equivalence, fullscreen geometry, secure score handling and health diagnostics. Keep the test result associated with the exact source commit being released. For browser changes, also run `npm run test:browser` with its documented local browser dependencies.
 
 For a local two-browser check, start the server from `server/`:
 
@@ -69,12 +69,12 @@ In its dashboard, verify these settings rather than assuming they are already co
 | Setting | Intended value |
 |---|---|
 | Repository | `Jupiter-NY/Tiny-Tank-Maze` |
-| Branch | `server` |
+| Branch | Confirm the existing connection; keep `server` aligned with tested `main` until the service is confirmed to track `main` |
 | Root directory | `server` |
 | Build command | `npm install` |
 | Start command | `npm start` |
 
-The server already listens on `0.0.0.0` and uses the hosting service's `PORT` environment variable. Check whether automatic deployments are enabled; otherwise deploy the selected commit manually through the existing service. Confirm that the deployment completed and that its **deployed commit ID matches the intended release**. A successful health response alone does not identify the deployed source version.
+The server already listens on `0.0.0.0` and uses the hosting service's `PORT` environment variable. Check whether automatic deployments are enabled; otherwise deploy the selected commit manually through the existing service. Confirm that the deployment completed and that its **deployed commit ID matches the intended release**. The current `/health` response includes the `RENDER_GIT_COMMIT` value; check that full hash, not just `ok: true`. The score API also requires the server-only environment variables listed in [BACKEND_RELEASE_HANDOFF.md](BACKEND_RELEASE_HANDOFF.md).
 
 Verify `ALLOWED_ORIGINS` includes the website origins that will actually be used, for example:
 
@@ -101,21 +101,13 @@ Keep the existing Supabase configuration and confirm `config.js` contains:
 multiplayerServer: "wss://tiny-tank-maze.onrender.com/ws",
 ```
 
-Stage these **nine browser assets** from the same selected release into the existing Vercel release directory:
+Use the repository's `scripts/build-release.py` from a clean checkout at the selected full main commit:
 
-```text
-index.html
-game.html
-multiplayer.html
-style.css
-config.js
-home.js
-leaderboard.js
-game.js
-multiplayer.js
+```sh
+python3 scripts/build-release.py --expected-commit FULL_MAIN_COMMIT_SHA --output /new/external/release-folder
 ```
 
-The deployment packaging script lives outside this repository. Check its asset list before using it: an older seven-file list omits `multiplayer.html` and `multiplayer.js`. Publish the staged files manually to the existing Vercel project serving `littletinygames.com` and retain its project/domain configuration. Do not put `server/`, `node_modules/`, tests, or database setup SQL into this static browser release.
+The package contains **13 browser assets**: nine game files under `/TinyTanks/` and four collection files at `/`, plus Vercel routing outside the public output. Deploy the staged release folder manually to the existing Vercel project `tiny-tank-maze`, preserving its project/domain configuration. Older flat-root or seven/nine-file packagers omit the collection or multiplayer files. The current packager excludes `server/`, dependencies, tests, SQL, Git files and release metadata from public output.
 
 Publishing these assets updates the website only; it does not update the Render server. Record the Vercel deployment identifier and source commit separately from the Render deployed commit. Preserve the previous release information for rollback.
 
@@ -123,14 +115,14 @@ Publishing these assets updates the website only; it does not update the Render 
 
 After both deployments complete, use two devices or independent browser sessions:
 
-1. Open `https://littletinygames.com` and select Multiplayer.
+1. Open `https://littletinygames.com/TinyTanks/` and select Multiplayer. Also check the collection at `https://littletinygames.com/` links to the game.
 2. Create a room on one device and join its code from the other.
 3. Start, move around corners, shoot, and use grenades.
 4. Finish a round and start a rematch.
 5. Disconnect a player and verify the visible recovery controls. Create/join a new room to reconnect; an ongoing match cannot be rejoined.
 6. Check Classic/Infinite mode still opens normally.
 
-Check the displayed client version and served browser files against the selected release, and verify the Render deployed commit in its dashboard. Record the website, backend, and two-device test results separately. A GitHub Pages test match is useful evidence for that site, but does not establish what Vercel currently serves.
+Check the displayed client version and served browser files against the selected release, and verify the Render deployed commit through `/health` or its dashboard. Check a normal completed single-player run if the score path changed. Record the website, backend, and physical-device or isolated-browser test results separately. A GitHub Pages test match is useful evidence for that site, but does not establish what Vercel currently serves.
 
 ## Server state and operating limits
 

@@ -2,11 +2,11 @@
 
 **Main is the shared source for all current work.** Start new feature branches from current main. The collection lives at `littletinygames.com` and the tank game at `/TinyTanks/`. Read [MAIN_WORKFLOW.md](MAIN_WORKFLOW.md) for source layout and publishing, and [CURRENT_RELEASE.md](CURRENT_RELEASE.md) for verified deployment status. Earlier dated notes below describe historical candidates.
 
-September 14 candidate: Nolan's obfuscated single-player **5.22.1**, multiplayer **5.9.1**, and the Little Tiny Games collection at `/` with the game at `/TinyTanks/`. Read [SEPTEMBER_14_HANDOFF.md](SEPTEMBER_14_HANDOFF.md) for tested fixes, packaging and the pending backend/database release steps. This candidate has not replaced the production site.
+**September 14 production:** Nolan's obfuscated single-player **5.22.1**, multiplayer **5.9.1**, and the Little Tiny Games collection are live. [Open the collection](https://littletinygames.com/) or [play Tiny Tank Maze](https://littletinygames.com/TinyTanks/). Code commit `6826d0d` passed 60 Node tests and 30 public production checks, including two-player Render gameplay and a normal score submission. Read [CURRENT_RELEASE.md](CURRENT_RELEASE.md) for exact deployment evidence and remaining limits, and [SEPTEMBER_14_HANDOFF.md](SEPTEMBER_14_HANDOFF.md) for the earlier reconciliation details.
 
-This branch's September 10 candidate includes Nolan's new features plus the reviewed fixes: single-player **5.17.1**, multiplayer **5.9.1**. Read [NOLANS_ADDITIONS_HANDOFF.md](NOLANS_ADDITIONS_HANDOFF.md) before further edits. Pushing this branch does not publish it to Vercel.
+The historical September 10 candidate included single-player **5.17.1** and multiplayer **5.9.1**. Its reviewed fixes are preserved in current main; [NOLANS_ADDITIONS_HANDOFF.md](NOLANS_ADDITIONS_HANDOFF.md) explains them.
 
-Current multiplayer release: **v5.8.2** on the `server` branch. See [RELEASE_STATUS.md](RELEASE_STATUS.md) for what is deployed and [MULTIPLAYER_SETUP.md](MULTIPLAYER_SETUP.md) for the two-host update workflow.
+The historical September 6 multiplayer release was **v5.8.2**. [RELEASE_STATUS.md](RELEASE_STATUS.md) preserves that release record; `MAIN_WORKFLOW.md` is the current publishing guide.
 
 ## Earlier single-player updates — v4.2 Enemy Scaling
 

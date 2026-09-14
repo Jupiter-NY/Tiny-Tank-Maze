@@ -1,5 +1,7 @@
 # September 14 reconciliation and game collection
 
+> Historical candidate notes. The unified main release is now published on Vercel and Render, including the landing page and `/TinyTanks/`. Read [CURRENT_RELEASE.md](CURRENT_RELEASE.md) for exact production verification and [MAIN_WORKFLOW.md](MAIN_WORKFLOW.md) before further work. Pending-release statements below describe the earlier preview stage.
+
 Prepared at Nolan's parent's request. This candidate combines Nolan's `Obfuscated` upload with the prior fixes and a new Little Tiny Games landing page. It has not replaced the production website. Backend deployment and database verification remain release requirements below.
 
 ## Verified preview

@@ -23,7 +23,7 @@ Nolan can test the published game remotely at **https://littletinygames.com/Tiny
 
 The website stays on the existing Vercel project `tiny-tank-maze`. The multiplayer and score backend stays on the existing Render service. The domain and DNS are unchanged.
 
-Render's existing `server` branch connection is preserved for this release; that branch is synchronized with main as a deployment mirror. Do not develop a separate frontend or backend on it. Until the Render dashboard connection is changed to main, a future backend release must fast-forward `server` to the tested main commit. Backend changes deploy before a frontend that requires them.
+The `server` branch is synchronized with main for compatibility with the existing Render setup. Do not develop a separate frontend or backend on it. The dashboard's tracked branch was not independently inspected in this release: all three branches were pushed together, and Render's exact deployed commit was verified through `/health`. Until its connection to main is confirmed, keep `server` fast-forwarded to the tested main commit for backend releases. Deploy backend changes before a frontend that requires them.
 
 Vercel still uses a manual publish; a GitHub push is not proof of a website update. Stage the clean main commit with:
 
@@ -38,3 +38,5 @@ Deploy that output to the existing Vercel project. Verify the served files, redi
 The production public browser key can read the leaderboard, while a single empty-array INSERT probe returned HTTP 401 / PostgreSQL 42501 `permission denied for table leaderboard`. No score rows were submitted by that probe. This confirms direct anonymous browser INSERT is already blocked. Authenticated-role grants were not inspected; the current game does not sign players into Supabase.
 
 `supabase_secure_leaderboard.sql` remains an account-level migration/reference for verifying both browser roles. No SQL migration was executed by this release task. New scores go through the Render validator. Obfuscation and plausibility checks are not complete proof of authentic gameplay.
+
+After publication, a real browser-played Classic round named `Release test` ended with score 100 and was accepted by the production server. This separately verified the server INSERT path; see `CURRENT_RELEASE.md` for the deployment and test record.
