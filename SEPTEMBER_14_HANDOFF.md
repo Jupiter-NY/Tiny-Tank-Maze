@@ -2,6 +2,14 @@
 
 Prepared at Nolan's parent's request. This candidate combines Nolan's `Obfuscated` upload with the prior fixes and a new Little Tiny Games landing page. It has not replaced the production website. Backend deployment and database verification remain release requirements below.
 
+## Verified preview
+
+[Open the Vercel preview](https://tiny-tank-maze-1x40wgf1a-ycs-projects-9737cb11.vercel.app/) with the project's Vercel sign-in. Deployment `dpl_D8yruLoacxerh5ew9oTeN5czXmee` is READY in the preview environment, built from `b2b92cdf4f6d4936efa5c0d63a33db28e0acc536`. Later documentation-only commits do not change its game assets.
+
+All 13 hosted assets match the staged source (excluding only Vercel's exact injected preview-toolbar script in HTML). All 22 HTTP checks passed, including `/TinyTanks/`, the 308 redirect from `/TinyTanks`, preservation of `?mode=infinite` in legacy redirects, and 404s for backend/SQL/Git/manifest files. The production root was fetched again and remained unchanged. The separate backend branch is pushed at `665e830`; it has not been merged into or deployed from `server`.
+
+The packager also passed 12 isolated fixture checks covering the file allowlist, Git identity, dirty/hidden asset changes, symlinks and preservation of existing output. Preview page/routing checks are not a claim that live Render score submission or multiplayer works from the preview origin; see the required production order below.
+
 ## Source lineage
 
 - Nolan's uploaded client: `Obfuscated`, `780b28764440e812a6effad034520708578bf44e`.
