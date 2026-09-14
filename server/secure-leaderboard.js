@@ -52,11 +52,6 @@ function parseOrigins(value) {
     .filter(Boolean);
 }
 
-function safeInt(value, fallback = 0) {
-  const number = Number(value);
-  return Number.isFinite(number) ? Math.trunc(number) : fallback;
-}
-
 export function createSecureLeaderboardRouter(options = {}) {
   const router = express.Router();
 
@@ -165,6 +160,11 @@ export function createSecureLeaderboardRouter(options = {}) {
     const run = activeRuns.get(tokenPayload.rid);
     if (!run || run.consumed) {
       fail(res, 409, "RUN_NOT_ACTIVE", "Run is not active.");
+      return null;
+    }
+
+    if (run.finishing) {
+      fail(res, 409, "RUN_FINISHING", "Run score submission is in progress.");
       return null;
     }
 
@@ -325,10 +325,10 @@ export function createSecureLeaderboardRouter(options = {}) {
     try {
       progress = validateProgress({
         mode: run.mode,
-        wave: safeInt(req.body?.wave, -1),
-        kills: safeInt(req.body?.kills, -1),
-        points: safeInt(req.body?.points, -1),
-        elapsedMs: safeInt(req.body?.elapsedMs, -1),
+        wave: req.body?.wave,
+        kills: req.body?.kills,
+        points: req.body?.points,
+        elapsedMs: req.body?.elapsedMs,
       });
 
       validateTiming(run, progress);
@@ -376,13 +376,13 @@ export function createSecureLeaderboardRouter(options = {}) {
     try {
       finalState = validateFinalScore({
         mode: run.mode,
-        wave: safeInt(req.body?.wave, -1),
-        kills: safeInt(req.body?.kills, -1),
-        points: safeInt(req.body?.points, -1),
-        score: safeInt(req.body?.score, -1),
-        hp: safeInt(req.body?.hp, -1),
-        elapsedMs: safeInt(req.body?.elapsedMs, -1),
-        cleared: Boolean(req.body?.cleared),
+        wave: req.body?.wave,
+        kills: req.body?.kills,
+        points: req.body?.points,
+        score: req.body?.score,
+        hp: req.body?.hp,
+        elapsedMs: req.body?.elapsedMs,
+        cleared: req.body?.cleared,
       });
 
       validateTiming(run, finalState);
@@ -419,9 +419,13 @@ export function createSecureLeaderboardRouter(options = {}) {
       cleared: finalState.cleared,
     };
 
+    // Reserve the run before the database await so overlapping requests cannot
+    // insert twice or rotate its challenge while the final score is saving.
+    run.finishing = true;
     try {
       await insertLeaderboardRow(row);
     } catch {
+      run.finishing = false;
       return fail(
         res,
         502,

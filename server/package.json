@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test tests/reliability.test.cjs tests/movement.test.cjs ../tests/client-recovery.test.cjs ../tests/fog-visibility.test.cjs"
+    "test": "node --test tests/reliability.test.cjs tests/movement.test.cjs ../tests/client-recovery.test.cjs ../tests/fog-visibility.test.cjs tests/secure-leaderboard.test.cjs"
   },
   "engines": {
     "node": ">=20"
