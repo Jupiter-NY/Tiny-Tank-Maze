@@ -54,27 +54,20 @@
   }
 
   async function parseResponse(response) {
-    const text = response.status === 204 ? "" : await response.text();
-    let body = null;
-    try {
-      body = text ? JSON.parse(text) : null;
-    } catch {
-      // Proxy errors may return text or HTML instead of JSON. Read the body
-      // once so its HTTP status is preserved for the game's error message.
-    }
-
     if (response.ok) {
-      if (text && body === null) throw new Error("Invalid leaderboard response.");
-      return body;
+      if (response.status === 204) return null;
+      const text = await response.text();
+      return text ? JSON.parse(text) : null;
     }
 
     let detail = "";
     let code = "";
-    if (body && typeof body === "object") {
+    try {
+      const body = await response.json();
       detail = body.message || body.error || body.hint || body.details || "";
       code = body.code || "";
-    } else {
-      detail = text;
+    } catch {
+      detail = await response.text();
     }
 
     const error = new Error(
@@ -132,12 +125,37 @@
     return Array.isArray(data) ? data : [];
   }
 
-  async function beginRun(mode) {
+  async function beginRun(mode, build) {
     const safeMode = mode === "infinite" ? "infinite" : "classic";
     return apiRequest("/run/start", {
       method: "POST",
-      body: JSON.stringify({ mode: safeMode }),
+      body: JSON.stringify({
+        mode: safeMode,
+        build: String(build || ""),
+      }),
     });
+  }
+
+  async function auditRun(run, audit) {
+    if (!run?.runId || !run?.token || !run?.auditChallenge) {
+      throw new Error("Secure gameplay audit run is missing.");
+    }
+
+    const result = await apiRequest("/run/audit", {
+      method: "POST",
+      body: JSON.stringify({
+        runId: run.runId,
+        token: run.token,
+        auditChallenge: run.auditChallenge,
+        audit,
+      }),
+    });
+
+    if (result?.auditChallenge) {
+      run.auditChallenge = result.auditChallenge;
+    }
+
+    return result;
   }
 
   async function checkpointRun(run, state) {
@@ -197,6 +215,7 @@
     canSubmitSecurely,
     fetchTop,
     beginRun,
+    auditRun,
     checkpointRun,
     submitScore,
   };

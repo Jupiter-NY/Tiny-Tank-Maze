@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://iwugissyviygmlelemfs.supabase.co https://tiny-tank-maze.onrender.com wss://tiny-tank-maze.onrender.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; worker-src 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tiny Tank Maze</title>
-  <link rel="stylesheet" href="style.css?v=5.17.1" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body class="home-body">
   <main class="home-page">
-    <nav aria-label="Game collection" style="margin-bottom:24px"><a class="home-link" href="../">← ALL GAMES</a></nav>
     <header class="home-hero">
       <div>
         <div class="eyebrow">DARK MAZE TANK COMBAT</div>
@@ -61,6 +61,7 @@
           <li>Full heal after every clear</li>
           <li>Choose 1 permanent combat upgrade after each wave</li>
           <li>Special enemy archetypes in later waves</li>
+          <li>Boss arena every 5 waves starting at wave 10</li>
           <li>Build Multi Shot, Poison and ricochet-explosion combos</li>
         </ul>
         <button class="primary-btn mode-button" data-mode="infinite">PLAY INFINITE</button>
@@ -71,7 +72,7 @@
         <h2>Private Rooms</h2>
         <p>
           Create a room code and fight friends in the same dark maze.
-          Battle through hidden corners, grab power-ups, and be the last tank standing.
+          The server controls movement, hits, grenades, and visibility.
         </p>
         <ul>
           <li>2–8 player free-for-all</li>
@@ -90,8 +91,6 @@
         </div>
         <p id="leaderboardStatus">Connecting to global leaderboard…</p>
       </div>
-
-      <p class="mp-small-note">Scores span multiple game versions; newer runs include kill-streak bonuses.</p>
 
       <div class="leaderboard-grid">
         <article class="leaderboard-card">
