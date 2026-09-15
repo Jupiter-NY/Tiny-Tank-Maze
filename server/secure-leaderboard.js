@@ -7,6 +7,13 @@ import {
   validateProgress,
   verifyRunToken,
 } from "./secure-leaderboard-core.js";
+import {
+  AUDIT_BUILD_ID,
+  createAuditState,
+  markAuditFailure,
+  requireFreshAudit,
+  validateAuditPacket,
+} from "./secure-game-audit.js";
 
 function cleanName(value) {
   return String(value || "")
@@ -16,10 +23,9 @@ function cleanName(value) {
 }
 
 function clientIp(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "")
-    .split(",")[0]
-    .trim();
-  return forwarded || req.ip || req.socket?.remoteAddress || "unknown";
+  // Express resolves this using the host app's explicitly trusted proxies.
+  // Never trust a caller-supplied forwarding header directly.
+  return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
 function clientFingerprint(req) {
@@ -30,12 +36,20 @@ function clientFingerprint(req) {
 
 function createWindowLimiter({ max, windowMs }) {
   const buckets = new Map();
+  let lastCleanup = 0;
 
   return (key) => {
     const now = Date.now();
+    if (now - lastCleanup >= windowMs) {
+      for (const [id, bucket] of buckets) {
+        if (now - bucket.startedAt >= windowMs) buckets.delete(id);
+      }
+      lastCleanup = now;
+    }
     let bucket = buckets.get(key);
 
     if (!bucket || now - bucket.startedAt >= windowMs) {
+      if (!bucket && buckets.size >= 10000) return false;
       bucket = { startedAt: now, count: 0 };
       buckets.set(key, bucket);
     }
@@ -54,6 +68,14 @@ function parseOrigins(value) {
 
 export function createSecureLeaderboardRouter(options = {}) {
   const router = express.Router();
+  // This callback must read a completed SERVER-owned simulation/replay result.
+  // Browser snapshots, signatures over browser claims, or matching bounds are
+  // not verification. With no trusted result provider, ranked writes fail closed.
+  const resolveVerifiedResult = options.resolveVerifiedResult;
+  const verificationTimeoutMs = options.verificationTimeoutMs ?? 10000;
+  if (!Number.isInteger(verificationTimeoutMs) || verificationTimeoutMs < 1 || verificationTimeoutMs > 10000) {
+    throw new Error("verificationTimeoutMs must be between 1 and 10000.");
+  }
 
   const configuredOrigins =
     options.allowedOrigins?.length
@@ -85,6 +107,10 @@ export function createSecureLeaderboardRouter(options = {}) {
     max: 30,
     windowMs: 10 * 60 * 1000,
   });
+  const allowAudit = createWindowLimiter({
+    max: 420,
+    windowMs: 10 * 60 * 1000,
+  });
 
   function configurationReady() {
     return (
@@ -93,51 +119,6 @@ export function createSecureLeaderboardRouter(options = {}) {
       Boolean(supabaseKey)
     );
   }
-
-  function databaseHeaders(extra = {}) {
-    const headers = { apikey: supabaseKey, ...extra };
-    // Legacy service_role JWTs use Authorization; modern sb_secret_ keys use apikey.
-    if (supabaseKey.startsWith("eyJ")) headers.Authorization = `Bearer ${supabaseKey}`;
-    return headers;
-  }
-
-  let databaseReadiness = null;
-  let databaseCheck = null;
-  router.readiness = async ({ checkDatabase = false } = {}) => {
-    const status = { configured: configurationReady() };
-    if (!checkDatabase) return status;
-
-    if (!status.configured) {
-      return { ...status, database: { readable: false, checkedAt: null, httpStatus: null, writePermissions: "not_checked" } };
-    }
-
-    // An explicit diagnostic can perform only a zero-row SELECT. Cache both
-    // successes and failures, and share in-flight checks to bound public traffic.
-    if (!databaseReadiness || Date.now() - databaseReadiness.checkedAt >= 30_000) {
-      if (!databaseCheck) {
-        databaseCheck = (async () => {
-          let readable = false;
-          let httpStatus = null;
-          try {
-            const response = await fetch(`${supabaseUrl}/rest/v1/leaderboard?select=id&limit=0`, {
-              method: "GET",
-              headers: databaseHeaders({ Accept: "application/json" }),
-              signal: AbortSignal.timeout(5000),
-            });
-            readable = response.ok;
-            httpStatus = response.status;
-            await response.body?.cancel();
-          } catch {
-            // Never publish credentials, database errors or response contents.
-          }
-          databaseReadiness = { readable, httpStatus, checkedAt: Date.now(), writePermissions: "not_checked" };
-        })().finally(() => { databaseCheck = null; });
-      }
-      await databaseCheck;
-    }
-
-    return { ...status, database: { ...databaseReadiness } };
-  };
 
   function cors(req, res, next) {
     const origin = String(req.headers.origin || "");
@@ -164,12 +145,36 @@ export function createSecureLeaderboardRouter(options = {}) {
   }
 
   router.use(cors);
+  // Mount this router before any general body parser so the limit applies while
+  // reading the request, including chunked bodies. Compressed bodies are refused.
+  router.use(express.json({ limit: "256kb", inflate: false }));
+  router.use((error, req, res, next) => {
+    if (!error.type) return next(error);
+    return fail(res, error.status || 400, "INVALID_REQUEST_BODY", "Invalid or oversized JSON request.");
+  });
+  router.use((req, res, next) => {
+    if (req.method !== "POST") return next();
+    if (!req.is("application/json")) return fail(res, 415, "JSON_REQUIRED", "Send application/json.");
+    if (!req.body || Array.isArray(req.body) || typeof req.body !== "object") {
+      return fail(res, 400, "INVALID_REQUEST_BODY", "A JSON object is required.");
+    }
+    // Also enforce the size if a host app has already parsed the body.
+    if (Buffer.byteLength(JSON.stringify(req.body)) > 256 * 1024) {
+      return fail(res, 413, "INVALID_REQUEST_BODY", "JSON request is too large.");
+    }
+    next();
+  });
 
   function fail(res, status, code, message) {
     return res.status(status).json({ code, message });
   }
 
   function requireConfigured(res) {
+    if (typeof resolveVerifiedResult !== "function") {
+      fail(res, 503, "AUTHORITATIVE_RESULTS_REQUIRED",
+        "Ranked scores are unavailable until server gameplay verification is configured.");
+      return false;
+    }
     if (configurationReady()) return true;
 
     fail(
@@ -181,7 +186,7 @@ export function createSecureLeaderboardRouter(options = {}) {
     return false;
   }
 
-  function findRun(req, res) {
+  function findBaseRun(req, res) {
     if (!requireConfigured(res)) return null;
 
     const body = req.body || {};
@@ -194,10 +199,7 @@ export function createSecureLeaderboardRouter(options = {}) {
       return null;
     }
 
-    if (
-      String(body.runId || "") !== tokenPayload.rid ||
-      String(body.runId || "") !== String(tokenPayload.rid)
-    ) {
+    if (String(body.runId || "") !== tokenPayload.rid) {
       fail(res, 403, "RUN_ID_MISMATCH", "Run ID mismatch.");
       return null;
     }
@@ -205,11 +207,6 @@ export function createSecureLeaderboardRouter(options = {}) {
     const run = activeRuns.get(tokenPayload.rid);
     if (!run || run.consumed) {
       fail(res, 409, "RUN_NOT_ACTIVE", "Run is not active.");
-      return null;
-    }
-
-    if (run.finishing) {
-      fail(res, 409, "RUN_FINISHING", "Run score submission is in progress.");
       return null;
     }
 
@@ -223,14 +220,33 @@ export function createSecureLeaderboardRouter(options = {}) {
       return null;
     }
 
-    if (String(body.challenge || "") !== run.challenge) {
+    return { run, tokenPayload };
+  }
+
+  function findRun(req, res) {
+    const found = findBaseRun(req, res);
+    if (!found) return null;
+    const { run } = found;
+    if (String(req.body?.challenge || "") !== run.challenge) {
       run.failedAttempts++;
       if (run.failedAttempts >= 3) run.consumed = true;
       fail(res, 409, "BAD_CHALLENGE", "Run challenge is stale or invalid.");
       return null;
     }
+    return found;
+  }
 
-    return { run, tokenPayload };
+  function findAuditRun(req, res) {
+    const found = findBaseRun(req, res);
+    if (!found) return null;
+    const { run } = found;
+    if (String(req.body?.auditChallenge || "") !== run.auditChallenge) {
+      markAuditFailure(run.audit);
+      run.consumed = true;
+      fail(res, 409, "BAD_AUDIT_CHALLENGE", "Audit challenge is stale or invalid.");
+      return null;
+    }
+    return found;
   }
 
   function validateTiming(run, progress) {
@@ -288,15 +304,23 @@ export function createSecureLeaderboardRouter(options = {}) {
   }
 
   async function insertLeaderboardRow(row) {
-    const headers = databaseHeaders({
+    const headers = {
+      apikey: supabaseKey,
       "Content-Type": "application/json",
       Prefer: "return=minimal",
-    });
+    };
+
+    // Legacy service_role keys are JWTs and conventionally use Authorization.
+    // Modern sb_secret_ keys are API keys and should be sent on apikey.
+    if (supabaseKey.startsWith("eyJ")) {
+      headers.Authorization = `Bearer ${supabaseKey}`;
+    }
 
     const response = await fetch(`${supabaseUrl}/rest/v1/leaderboard`, {
       method: "POST",
       headers,
       body: JSON.stringify(row),
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
@@ -323,9 +347,25 @@ export function createSecureLeaderboardRouter(options = {}) {
       );
     }
 
-    const mode = req.body?.mode === "infinite" ? "infinite" : "classic";
+    const mode = req.body?.mode;
+    if (!["classic", "infinite"].includes(mode)) {
+      return fail(res, 400, "INVALID_MODE", "Unknown game mode.");
+    }
+    if (activeRuns.size >= 2000) {
+      return fail(res, 503, "RUN_CAPACITY", "Ranked run capacity reached.");
+    }
+    if (String(req.body?.build || "") !== AUDIT_BUILD_ID) {
+      return fail(
+        res,
+        426,
+        "CLIENT_BUILD_REJECTED",
+        "This game build is not accepted for leaderboard runs."
+      );
+    }
+
     const token = createRunToken(mode, hmacSecret);
     const origin = String(req.headers.origin || "");
+    const auditChallenge = rotateChallenge();
 
     activeRuns.set(token.runId, {
       runId: token.runId,
@@ -340,12 +380,50 @@ export function createSecureLeaderboardRouter(options = {}) {
       checkpoints: 0,
       failedAttempts: 0,
       challenge: token.challenge,
+      auditChallenge,
+      audit: createAuditState(),
       fingerprint: clientFingerprint(req),
       origin,
       consumed: false,
     });
 
-    res.json(token);
+    res.json({ ...token, auditChallenge, build: AUDIT_BUILD_ID });
+  });
+
+  router.post("/run/audit", (req, res) => {
+    const rateKey = `audit:${clientIp(req)}`;
+    if (!allowAudit(rateKey)) {
+      return fail(res, 429, "RATE_LIMITED", "Too many gameplay audit packets.");
+    }
+
+    const found = findAuditRun(req, res);
+    if (!found) return;
+    const { run } = found;
+
+    try {
+      const auditElapsed = req.body?.audit?.elapsedMs;
+      if (!Number.isInteger(auditElapsed) || auditElapsed > Date.now() - run.startedAt + 7000) {
+        const error = new Error("Audit clock is ahead of server time.");
+        error.code = "AUDIT_TIME_AHEAD";
+        throw error;
+      }
+      const result = validateAuditPacket(run.audit, req.body?.audit, run.mode);
+      run.auditChallenge = rotateChallenge();
+      return res.json({
+        ok: true,
+        auditChallenge: run.auditChallenge,
+        auditSeq: result.seq,
+      });
+    } catch (error) {
+      markAuditFailure(run.audit);
+      run.consumed = true;
+      return fail(
+        res,
+        400,
+        error.code || "AUDIT_REJECTED",
+        "Gameplay audit rejected this run."
+      );
+    }
   });
 
   router.post("/run/checkpoint", (req, res) => {
@@ -432,6 +510,8 @@ export function createSecureLeaderboardRouter(options = {}) {
         error.code = "MISSING_CHECKPOINTS";
         throw error;
       }
+
+      requireFreshAudit(run.audit, finalState.elapsedMs, 7000);
     } catch (error) {
       run.failedAttempts++;
       if (run.failedAttempts >= 3) run.consumed = true;
@@ -448,22 +528,50 @@ export function createSecureLeaderboardRouter(options = {}) {
       return fail(res, 400, "INVALID_NAME", "Player name required.");
     }
 
+    // Reserve synchronously, before any await. Ambiguous database failures must
+    // never enable another insert for the same run.
+    run.consumed = true;
+    activeRuns.delete(run.runId);
+    let verified;
+    const controller = new AbortController();
+    let verificationTimer;
+    try {
+      const deadline = new Promise((resolve, reject) => {
+        verificationTimer = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Gameplay verification timed out."));
+        }, verificationTimeoutMs);
+      });
+      const result = await Promise.race([
+        Promise.resolve().then(() => resolveVerifiedResult({ runId: run.runId, mode: run.mode, signal: controller.signal })),
+        deadline,
+      ]);
+      if (!result) return fail(res, 403, "UNVERIFIED_RUN", "No verified gameplay result exists.");
+      verified = validateFinalScore(result);
+    } catch {
+      return fail(res, 503, "VERIFICATION_UNAVAILABLE", "Gameplay verification is unavailable.");
+    } finally {
+      clearTimeout(verificationTimer);
+    }
+    for (const field of ["mode", "wave", "kills", "points", "score", "hp", "elapsedMs", "cleared"]) {
+      if (verified[field] !== finalState[field]) {
+        return fail(res, 400, "VERIFIED_RESULT_MISMATCH", "Score differs from verified gameplay.");
+      }
+    }
+
     const row = {
+      run_id: run.runId,
       player_name: playerName,
-      mode: finalState.mode,
-      score: finalState.score,
-      wave: finalState.wave,
-      kills: finalState.kills,
-      cleared: finalState.cleared,
+      mode: verified.mode,
+      score: verified.score,
+      wave: verified.wave,
+      kills: verified.kills,
+      cleared: verified.cleared,
     };
 
-    // Reserve the run before the database await so overlapping requests cannot
-    // insert twice or rotate its challenge while the final score is saving.
-    run.finishing = true;
     try {
       await insertLeaderboardRow(row);
     } catch {
-      run.finishing = false;
       return fail(
         res,
         502,
@@ -471,9 +579,6 @@ export function createSecureLeaderboardRouter(options = {}) {
         "Leaderboard database write failed."
       );
     }
-
-    run.consumed = true;
-    activeRuns.delete(run.runId);
 
     res.json({
       ok: true,

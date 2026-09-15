@@ -74,7 +74,7 @@ function reject(code, message) {
 
 function finiteInteger(value, name, min, max) {
   const number = value;
-  if (typeof number !== "number" || !Number.isFinite(number) || !Number.isInteger(number)) {
+  if (!Number.isFinite(number) || !Number.isInteger(number)) {
     reject("INVALID_NUMBER", `${name} must be an integer.`);
   }
   if (number < min || number > max) {
@@ -84,7 +84,10 @@ function finiteInteger(value, name, min, max) {
 }
 
 export function validateProgress(input) {
-  const mode = input.mode === "infinite" ? "infinite" : "classic";
+  if (!input || !["classic", "infinite"].includes(input.mode)) {
+    reject("INVALID_MODE", "Unknown game mode.");
+  }
+  const mode = input.mode;
   const wave = finiteInteger(input.wave, "wave", 1, MAX_WAVE);
   const kills = finiteInteger(input.kills, "kills", 0, MAX_KILLS);
   const points = finiteInteger(input.points, "points", 0, MAX_SCORE);
@@ -152,18 +155,8 @@ export function validateProgress(input) {
 export function validateFinalScore(input) {
   const progress = validateProgress(input);
   const score = finiteInteger(input.score, "score", 0, MAX_SCORE);
-  // Poison and splash damage can leave fractional HP; preserve it for the
-  // same floor(hp * 2) Classic bonus used by the game.
-  const hp = input.hp;
-  if (typeof hp !== "number" || !Number.isFinite(hp)) {
-    reject("INVALID_NUMBER", "hp must be a finite number.");
-  }
-  if (hp < 0 || hp > 100_000) {
-    reject("OUT_OF_RANGE", "hp is outside the accepted range.");
-  }
-  if (typeof input.cleared !== "boolean") {
-    reject("INVALID_CLEAR", "cleared must be a boolean.");
-  }
+  const hp = finiteInteger(input.hp, "hp", 0, 100_000);
+  if (typeof input.cleared !== "boolean") reject("INVALID_CLEAR", "cleared must be a boolean.");
   const cleared = input.cleared;
 
   if (progress.mode === "classic") {

@@ -22,7 +22,7 @@ function reject(code, message) {
 }
 
 function finite(value, name, min = -Infinity, max = Infinity) {
-  const n = Number(value);
+  const n = value;
   if (!Number.isFinite(n) || n < min || n > max) {
     reject("AUDIT_INVALID_NUMBER", `${name} is invalid.`);
   }
@@ -340,6 +340,7 @@ function validateEnemySnapshots(state, packet, trailEnd, mode) {
   const list = Array.isArray(packet.enemies) ? packet.enemies : [];
   if (list.length > 300) reject("AUDIT_TOO_MANY_ENEMIES", "Enemy snapshot is too large.");
   const seen = new Set();
+  if (state.enemies.size + list.length > 10000) reject("AUDIT_CAPACITY", "Enemy history limit reached.");
   const damageMap = new Map();
   for (const pair of Array.isArray(packet.enemyDamage) ? packet.enemyDamage : []) {
     if (!Array.isArray(pair) || pair.length < 2) continue;
@@ -409,6 +410,8 @@ function playerHitPathValid(state, event, mods, mode) {
   if (!Array.isArray(event) || event.length < 12) reject("AUDIT_BAD_HIT_EVENT", "Malformed player-hit event.");
   const hitT = integer(event[0], "hit.t", 0, 8*60*60*1000);
   const spawnT = integer(event[1], "hit.spawnT", 0, hitT);
+  // Player bullets live for 2.8s; allow small timestamp rounding differences.
+  if (hitT - spawnT > 3000) reject("AUDIT_HIT_LIFETIME", "Player hit exceeds bullet lifetime.");
   const wave = integer(event[2], "hit.wave", 1, 250);
   let x = finite(event[3], "hit.sx", 0, WIDTH);
   let y = finite(event[4], "hit.sy", 0, HEIGHT);
@@ -458,6 +461,8 @@ function playerHitPathValid(state, event, mods, mode) {
 function addEnemyShots(state, rawShots, mods, mode) {
   const shots = Array.isArray(rawShots) ? rawShots : [];
   if (shots.length > 2200) reject("AUDIT_TOO_MANY_SHOTS", "Enemy shot batch is too large.");
+  if (state.enemyShotIds.size + shots.length > 50000) reject("AUDIT_CAPACITY", "Shot history limit reached.");
+  if (state.activeEnemyBullets.length + shots.length > 2200) reject("AUDIT_TOO_MANY_SHOTS", "Too many active enemy shots.");
   for (const raw of shots) {
     // [id,t,wave,x,y,vx,vy,damage,radius,bounces,explR,explD,life]
     if (!Array.isArray(raw) || raw.length < 13) reject("AUDIT_BAD_ENEMY_SHOT", "Malformed enemy shot.");
@@ -486,6 +491,9 @@ function addEnemyShots(state, rawShots, mods, mode) {
 function simulateEnemyBullets(state, trail, mode) {
   if (!trail.length) return;
   const endT = trail[trail.length - 1].t;
+  const steps = state.activeEnemyBullets.reduce((total, b) => total +
+    (b.dead || b.bounces > 0 ? 0 : Math.ceil(Math.max(0, Math.min(endT, b.expires) - Math.max(b.lastT, b.t)) / 20)), 0);
+  if (steps > 40000) reject("AUDIT_WORK_LIMIT", "Enemy replay exceeds packet work budget.");
   for (const bullet of state.activeEnemyBullets) {
     if (bullet.dead || bullet.bounces > 0) continue; // Bounce bullets are intentionally not used for mandatory-hit validation.
     let t = Math.max(bullet.lastT, bullet.t);
@@ -553,6 +561,24 @@ export function validateAuditPacket(state, packet, mode) {
   if (seq !== state.seq + 1) reject("AUDIT_SEQUENCE", "Audit sequence is missing or out of order.");
   const elapsedMs = integer(packet.elapsedMs, "audit.elapsedMs", 0, 8*60*60*1000);
   const wave = integer(packet.wave, "audit.wave", 1, 250);
+  if (mode === "classic" && wave !== 1) reject("AUDIT_WAVE_MISMATCH", "Classic must stay on wave 1.");
+  if (elapsedMs < state.lastAuditElapsed) reject("AUDIT_TIME_ORDER", "Audit clock moved backwards.");
+  for (const [key, limit] of [["enemyDamage",300],["enemies",300],["enemyShots",2200],["playerHits",1000]]) {
+    if (!Array.isArray(packet[key]) || packet[key].length > limit) {
+      reject("AUDIT_BAD_BATCH", `${key} is missing or too large.`);
+    }
+  }
+  // Bound replay work before visiting any hit trajectory. A valid-shaped packet
+  // must not force hours of simulation on the server's event loop.
+  let hitSteps = 0;
+  for (const hit of packet.playerHits) {
+    if (!Array.isArray(hit) || hit.length < 12) reject("AUDIT_BAD_HIT_EVENT", "Malformed player-hit event.");
+    const hitT = integer(hit[0], "hit.t", 0, elapsedMs + 1200);
+    const spawnT = integer(hit[1], "hit.spawnT", 0, hitT);
+    if (hitT - spawnT > 3000) reject("AUDIT_HIT_LIFETIME", "Player hit exceeds bullet lifetime.");
+    hitSteps += Math.ceil((hitT - spawnT) / 8);
+  }
+  if (hitSteps > 20000) reject("AUDIT_WORK_LIMIT", "Player replay exceeds packet work budget.");
 
   if (!state.initialized) {
     state.mazeCode = String(packet.maze || "");
@@ -565,6 +591,7 @@ export function validateAuditPacket(state, packet, mode) {
   const mods = sanitizeMods(packet.mods || {}, mode, wave);
   const trail = validateTrail(state, packet, mods, mode);
   const trailEnd = trail[trail.length - 1];
+  if (trailEnd.wave !== wave) reject("AUDIT_WAVE_MISMATCH", "Audit wave differs from trail.");
   if (Math.abs(trailEnd.t - elapsedMs) > 1200) reject("AUDIT_STALE_TRAIL", "Player trail is stale.");
 
   const expectedDamage = finite(packet.expectedDamageTotal, "audit.expectedDamageTotal", 0, 1e12);
@@ -624,7 +651,10 @@ export function markAuditFailure(state) {
 
 export function requireFreshAudit(state, elapsedMs, maxAgeMs = 7000) {
   if (!state?.initialized || state.failed) reject("AUDIT_REQUIRED", "A valid gameplay audit is required.");
-  if (elapsedMs - state.lastAuditElapsed > maxAgeMs) reject("AUDIT_STALE", "The final gameplay audit is stale.");
+  const age = Date.now() - state.lastAuditServerAt;
+  if (Math.abs(elapsedMs - state.lastAuditElapsed) > maxAgeMs || age < 0 || age > maxAgeMs) {
+    reject("AUDIT_STALE", "The final gameplay audit is stale or ahead of the score.");
+  }
   return true;
 }
 
