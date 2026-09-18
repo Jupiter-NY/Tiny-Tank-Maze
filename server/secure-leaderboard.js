@@ -68,10 +68,10 @@ function parseOrigins(value) {
 
 export function createSecureLeaderboardRouter(options = {}) {
   const router = express.Router();
-  // This callback must read a completed SERVER-owned simulation/replay result.
-  // Browser snapshots, signatures over browser claims, or matching bounds are
-  // not verification. With no trusted result provider, ranked writes fail closed.
+  // Optional server-owned verification. Without it, use practical score/time
+  // checks; browser telemetry alone cannot prove honest gameplay.
   const resolveVerifiedResult = options.resolveVerifiedResult;
+  const auditRequired = options.requireGameplayAudit ?? (typeof resolveVerifiedResult === "function");
   const verificationTimeoutMs = options.verificationTimeoutMs ?? 10000;
   if (!Number.isInteger(verificationTimeoutMs) || verificationTimeoutMs < 1 || verificationTimeoutMs > 10000) {
     throw new Error("verificationTimeoutMs must be between 1 and 10000.");
@@ -170,11 +170,6 @@ export function createSecureLeaderboardRouter(options = {}) {
   }
 
   function requireConfigured(res) {
-    if (typeof resolveVerifiedResult !== "function") {
-      fail(res, 503, "AUTHORITATIVE_RESULTS_REQUIRED",
-        "Ranked scores are unavailable until server gameplay verification is configured.");
-      return false;
-    }
     if (configurationReady()) return true;
 
     fail(
@@ -387,13 +382,21 @@ export function createSecureLeaderboardRouter(options = {}) {
       consumed: false,
     });
 
-    res.json({ ...token, auditChallenge, build: AUDIT_BUILD_ID });
+    res.json({ ...token, auditChallenge, auditRequired, build: AUDIT_BUILD_ID });
   });
 
   router.post("/run/audit", (req, res) => {
     const rateKey = `audit:${clientIp(req)}`;
     if (!allowAudit(rateKey)) {
       return fail(res, 429, "RATE_LIMITED", "Too many gameplay audit packets.");
+    }
+
+    // Older clients may still send telemetry in basic mode. Acknowledge it
+    // without letting heuristic false positives invalidate their score.
+    if (!auditRequired) {
+      const found = findBaseRun(req, res);
+      if (!found) return;
+      return res.json({ ok: true, auditRequired: false, auditChallenge: found.run.auditChallenge });
     }
 
     const found = findAuditRun(req, res);
@@ -505,13 +508,13 @@ export function createSecureLeaderboardRouter(options = {}) {
       validateMonotonic(run, finalState);
 
       const required = requiredCheckpointCount(finalState.elapsedMs);
-      if (run.checkpoints < required) {
+      if (auditRequired && run.checkpoints < required) {
         const error = new Error("Not enough server checkpoints.");
         error.code = "MISSING_CHECKPOINTS";
         throw error;
       }
 
-      requireFreshAudit(run.audit, finalState.elapsedMs, 7000);
+      if (auditRequired) requireFreshAudit(run.audit, finalState.elapsedMs, 7000);
     } catch (error) {
       run.failedAttempts++;
       if (run.failedAttempts >= 3) run.consumed = true;
@@ -532,31 +535,34 @@ export function createSecureLeaderboardRouter(options = {}) {
     // never enable another insert for the same run.
     run.consumed = true;
     activeRuns.delete(run.runId);
-    let verified;
-    const controller = new AbortController();
-    let verificationTimer;
-    try {
-      const deadline = new Promise((resolve, reject) => {
-        verificationTimer = setTimeout(() => {
-          controller.abort();
-          reject(new Error("Gameplay verification timed out."));
-        }, verificationTimeoutMs);
-      });
-      const result = await Promise.race([
-        Promise.resolve().then(() => resolveVerifiedResult({ runId: run.runId, mode: run.mode, signal: controller.signal })),
-        deadline,
-      ]);
-      if (!result) return fail(res, 403, "UNVERIFIED_RUN", "No verified gameplay result exists.");
-      verified = validateFinalScore(result);
-    } catch {
-      return fail(res, 503, "VERIFICATION_UNAVAILABLE", "Gameplay verification is unavailable.");
-    } finally {
-      clearTimeout(verificationTimer);
-    }
-    for (const field of ["mode", "wave", "kills", "points", "score", "hp", "elapsedMs", "cleared"]) {
-      if (verified[field] !== finalState[field]) {
-        return fail(res, 400, "VERIFIED_RESULT_MISMATCH", "Score differs from verified gameplay.");
+    let verified = finalState;
+    if (typeof resolveVerifiedResult === "function") {
+      const controller = new AbortController();
+      let verificationTimer;
+      try {
+        const deadline = new Promise((resolve, reject) => {
+          verificationTimer = setTimeout(() => {
+            controller.abort();
+            reject(new Error("Gameplay verification timed out."));
+          }, verificationTimeoutMs);
+        });
+        const result = await Promise.race([
+          Promise.resolve().then(() => resolveVerifiedResult({ runId: run.runId, mode: run.mode, signal: controller.signal })),
+          deadline,
+        ]);
+        if (!result) return fail(res, 403, "UNVERIFIED_RUN", "No verified gameplay result exists.");
+        verified = validateFinalScore(result);
+      } catch {
+        return fail(res, 503, "VERIFICATION_UNAVAILABLE", "Gameplay verification is unavailable.");
+      } finally {
+        clearTimeout(verificationTimer);
       }
+      for (const field of ["mode", "wave", "kills", "points", "score", "hp", "elapsedMs", "cleared"]) {
+        if (verified[field] !== finalState[field]) {
+          return fail(res, 400, "VERIFIED_RESULT_MISMATCH", "Score differs from verified gameplay.");
+        }
+      }
+
     }
 
     const row = {
